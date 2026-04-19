@@ -1,0 +1,25 @@
+{
+  "name": "Control Nutricional",
+  "short_name": "Control Nutri",
+  "description": "App de control nutricional diario con sugerencias, progreso y reportes PDF.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#05070d",
+  "background_color": "#05070d",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

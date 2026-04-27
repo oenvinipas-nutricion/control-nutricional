@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import html2canvas from "html2canvas";
+import { jsPDF } from "jspdf";
 // ============================================================================
 // 🛑 BLOQUE 1: CONSTANTES GLOBALES Y CONFIGURACIÓN
 // ============================================================================
@@ -156,6 +158,38 @@ function getTituloPantalla(vistaActual, historialVista) {
 }
 function formatMetaHistorialValue(value, unidad) { return `${Math.round(value || 0)}${unidad}`; }
 
+function formatFechaCompletaPdf(dateInput) {
+  const base = dateInput instanceof Date ? new Date(dateInput) : new Date(dateInput);
+  return base.toLocaleDateString("es-ES", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+}
+function getPeriodoPdfLabel(titulo, fechaBaseHoy) {
+  if (titulo === "Resumen Diario") return formatFechaCompletaPdf(fechaBaseHoy);
+  if (titulo === "Resumen Semanal") return formatRangoHistorialTexto(fechaBaseHoy);
+  if (titulo === "Resumen Mensual") return formatMesHistorialTexto(fechaBaseHoy);
+  return formatFechaCompletaPdf(fechaBaseHoy);
+}
+function buildPdfFileName(titulo, fechaBaseHoy) {
+  const base = String(titulo || "reporte").toLowerCase().replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "");
+  const fecha = formatDateKey(fechaBaseHoy || new Date());
+  return `${base || "reporte"}-${fecha}.pdf`;
+}
+function getPdfMetricColors(key) {
+  const colors = {
+    kcal: ["#ff3b30", "#ffa515"],
+    prot: ["#ff2f4f", "#ff6a7a"],
+    carb: ["#ff9d00", "#ffd43b"],
+    gras: ["#0f9f5f", "#85d63a"],
+    fibr: ["#159447", "#7bd12e"],
+    agua: ["#0d6efd", "#45c4f2"],
+  };
+  return colors[key] || ["#ff6a00", "#ffa515"];
+}
+
 // ============================================================================
 // 💾 BLOQUE 3: ALMACENAMIENTO Y MANEJO DE DATOS LOCALES
 // ============================================================================
@@ -163,6 +197,7 @@ function formatMetaHistorialValue(value, unidad) { return `${Math.round(value ||
 const STORAGE_CURRENT_DAY_KEY = "nutri_app_current_day_v2";
 const STORAGE_HISTORY_KEY = "nutri_app_history_v2";
 const STORAGE_PROFILE_KEY = "nutri_app_profile_v1";
+const STORAGE_PENDING_DAY_KEY = "nutri_app_pending_day_v1";
 
 function getDefaultProfileState() {
   return { nombre: "", metasBase: { kcal: 0, prot: 0, carb: 0, gras: 0, fibr: 0, agua: 0 }, setupCompleto: false };
@@ -204,6 +239,24 @@ function getStoredUserName() {
   return "Enrique";
 }
 function safeJsonParse(value, fallback) { try { return value ? JSON.parse(value) : fallback; } catch { return fallback; } }
+function dayStateHasEntries(dayState) {
+  if (!dayState) return false;
+  return Object.values(dayState.registrosPrincipales || {}).some(Boolean) ||
+         Object.values(dayState.registrosColaciones || {}).some(Boolean) ||
+         (Array.isArray(dayState.aguaExtra) && dayState.aguaExtra.length > 0);
+}
+function persistPendingDayState(dayState) {
+  if (typeof window === "undefined") return;
+  if (!dayState || !dayStateHasEntries(dayState) || dayState.diaFinalizado) {
+    window.localStorage.removeItem(STORAGE_PENDING_DAY_KEY);
+    return;
+  }
+  window.localStorage.setItem(STORAGE_PENDING_DAY_KEY, JSON.stringify(dayState));
+}
+function clearPendingDayState() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(STORAGE_PENDING_DAY_KEY);
+}
 function formatDateKey(dateInput) {
   const date = dateInput instanceof Date ? new Date(dateInput) : new Date(dateInput);
   const year = date.getFullYear();
@@ -297,21 +350,32 @@ function getInitialCurrentDayState(metasBase = METAS_DIARIAS) {
   const baseHoy = getDefaultDayState(new Date(), metasBase);
 
   if (typeof window === "undefined") return baseHoy;
+
+  const rawPending = safeJsonParse(window.localStorage.getItem(STORAGE_PENDING_DAY_KEY), null);
+  if (rawPending?.fechaKey) {
+    const pendingBase = getDefaultDayState(parseDateFromKey(rawPending.fechaKey), metasBase);
+    const pendingSanitized = sanitizeCurrentDayState(rawPending, pendingBase);
+    if (pendingSanitized.fechaKey !== hoyKey && !pendingSanitized.diaFinalizado && dayStateHasEntries(pendingSanitized)) {
+      return pendingSanitized;
+    }
+    clearPendingDayState();
+  }
+
   const raw = safeJsonParse(window.localStorage.getItem(STORAGE_CURRENT_DAY_KEY), null);
   if (!raw) return baseHoy;
 
-  if (raw.fechaKey !== hoyKey) {
-    const tieneDatos = Object.values(raw.registrosPrincipales || {}).some(Boolean) ||
-                       Object.values(raw.registrosColaciones || {}).some(Boolean) ||
-                       (Array.isArray(raw.aguaExtra) && raw.aguaExtra.length > 0);
+  const fallbackBase = raw?.fechaKey ? getDefaultDayState(parseDateFromKey(raw.fechaKey), metasBase) : baseHoy;
+  const sanitized = sanitizeCurrentDayState(raw, fallbackBase);
 
-    if (!raw.diaFinalizado && tieneDatos) {
-      return sanitizeCurrentDayState(raw, getDefaultDayState(parseDateFromKey(raw.fechaKey), metasBase));
-    } else {
-      return baseHoy;
+  if (sanitized.fechaKey !== hoyKey) {
+    if (!sanitized.diaFinalizado && dayStateHasEntries(sanitized)) {
+      persistPendingDayState(sanitized);
+      return sanitized;
     }
+    return baseHoy;
   }
-  return sanitizeCurrentDayState(raw, baseHoy);
+
+  return sanitized;
 }
 
 function sanitizeCurrentDayState(raw, base = getDefaultDayState()) {
@@ -468,11 +532,13 @@ function App() {
 
   const [perfilUsuario, setPerfilUsuario] = useState(initialProfileState);
   const [setupInicialCompleto, setSetupInicialCompleto] = useState(Boolean(initialProfileState.setupCompleto));
+  const [mostrarIntroSetup, setMostrarIntroSetup] = useState(true);
   const [vistaActual, setVistaActual] = useState("sugerencia");
   const [menuDatosAbierto, setMenuDatosAbierto] = useState(false);
   
   const hoyAvisoKey = useMemo(() => formatDateKey(new Date()), []);
   const [modalRescateAbierto, setModalRescateAbierto] = useState(() => initialDayState.fechaKey !== hoyAvisoKey);
+  const [modoRescatePendiente, setModoRescatePendiente] = useState(() => initialDayState.fechaKey !== hoyAvisoKey);
   const [fechaDiaActivo, setFechaDiaActivo] = useState({ key: initialDayState.fechaKey, iso: initialDayState.fechaISO });
   const fechaHoyKey = fechaDiaActivo.key;
   const fechaHoyISO = fechaDiaActivo.iso;
@@ -518,13 +584,17 @@ function App() {
 
   const selectorRef = useRef(null);
   const previewFrameRef = useRef(null);
+  const backupFileInputRef = useRef(null);
   const menuDatosRef = useRef(null);
   const sugerenciaCaptureRef = useRef(null);
   const resumenDiarioStickyRef = useRef(null);
   const resumenDiarioRowsRef = useRef(null);
   const resumenDiarioRowsInnerRef = useRef(null);
+  const resumenDiarioNotaRef = useRef(null);
   const [resumenDiarioScrollHeight, setResumenDiarioScrollHeight] = useState(220);
   const [resumenDiarioRowHeight, setResumenDiarioRowHeight] = useState(112);
+  const [resumenDiarioNotaHeight, setResumenDiarioNotaHeight] = useState(72);
+  const [resumenDiarioParkingHeight, setResumenDiarioParkingHeight] = useState(0);
   const fechaBaseHoy = useMemo(() => parseDateFromKey(fechaHoyKey), [fechaHoyKey]);
   const actual = useMemo(() => OPCIONES.find((o) => o.label === comida) || OPCIONES[0], [comida]);
   const opcionesDisponibles = useMemo(() => OPCIONES.filter((op) => {
@@ -537,6 +607,7 @@ function App() {
   const fecha = fechaBaseHoy.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
   const fechaBonita = fecha.charAt(0).toUpperCase() + fecha.slice(1);
   const nombreUsuario = (setupInicialCompleto ? String(perfilUsuario.nombre || "").trim() : "") || getStoredUserName();
+  const ocultarTituloSuperiorPdf = vistaActual === "pdf" && historialVista === "preview" && (pdfPreview?.titulo === "Resumen Semanal" || pdfPreview?.titulo === "Resumen Mensual");
   const tituloPantalla = vistaActual === "pdf" && historialVista === "preview" && pdfPreview?.titulo ? pdfPreview.titulo.toUpperCase() : getTituloPantalla(vistaActual, historialVista);
   const saludoTexto = useMemo(() => {
     const hora = new Date().getHours();
@@ -551,15 +622,16 @@ function App() {
       if (fechaHoyKey !== hoyRealKey) {
         if (diaFinalizado) {
           iniciarNuevoDiaDesdeReloj();
-        } else if (!modalRescateAbierto) {
+        } else if (!modalRescateAbierto && !modoRescatePendiente) {
           setModalRescateAbierto(true);
         }
       }
     }, 60000); 
     return () => clearInterval(interval);
-  }, [fechaHoyKey, diaFinalizado, modalRescateAbierto, metasActuales]);
+  }, [fechaHoyKey, diaFinalizado, modalRescateAbierto, modoRescatePendiente, metasActuales]);
 
   function iniciarNuevoDiaDesdeReloj() {
+    clearPendingDayState();
     const nuevoDia = getDefaultDayState(new Date(), metasActuales);
     setFechaDiaActivo({ key: nuevoDia.fechaKey, iso: nuevoDia.fechaISO });
     setRegistrosPrincipales(nuevoDia.registrosPrincipales);
@@ -568,6 +640,7 @@ function App() {
     setDiaFinalizado(nuevoDia.diaFinalizado);
     setSegmentosMetas([createMetaSegment(nuevoDia.fechaISO, metasActuales)]);
     setModalRescateAbierto(false);
+    setModoRescatePendiente(false);
     setVistaActual("sugerencia");
     setHomeActualizadaActiva(false);
   }
@@ -643,6 +716,12 @@ function App() {
     if (typeof window === "undefined") return;
     const payload = { fechaKey: fechaHoyKey, fechaISO: fechaHoyISO, registrosPrincipales, registrosColaciones, aguaExtra, diaFinalizado, metasActuales, segmentosMetas };
     window.localStorage.setItem(STORAGE_CURRENT_DAY_KEY, JSON.stringify(payload));
+    const hoyRealKey = formatDateKey(new Date());
+    if (fechaHoyKey !== hoyRealKey && !diaFinalizado && dayStateHasEntries(payload)) {
+      persistPendingDayState(payload);
+    } else if (diaFinalizado || fechaHoyKey === hoyRealKey) {
+      clearPendingDayState();
+    }
   }, [fechaHoyISO, fechaHoyKey, registrosPrincipales, registrosColaciones, aguaExtra, diaFinalizado, metasActuales, segmentosMetas]);
   
   useEffect(() => {
@@ -750,13 +829,14 @@ useEffect(() => {
   const rangoSemanaPreview = useMemo(() => formatRangoHistorialTexto(fechaBaseHoy), [fechaBaseHoy]);
   const resumenDiarioSemanaCerrados = useMemo(() => weekSnapshots.filter((row) => row?.diaFinalizado).slice(0, 7), [weekSnapshots]);
   const resumenSemanalItems = useMemo(() => [
-    { key: "kcal", icono: "🔥", label: "KCAL", unidad: "kcal", actual: weekSnapshots.reduce((sum, item) => sum + item.totales.kcal, 0), meta: weekSnapshots.reduce((sum, item) => sum + item.metaEfectiva.kcal, 0) },
-    { key: "prot", icono: "🥩", label: "PROT", unidad: "g", actual: weekSnapshots.reduce((sum, item) => sum + item.totales.prot, 0), meta: weekSnapshots.reduce((sum, item) => sum + item.metaEfectiva.prot, 0) },
-    { key: "carb", icono: "🍞", label: "CARBS", unidad: "g", actual: weekSnapshots.reduce((sum, item) => sum + item.totales.carb, 0), meta: weekSnapshots.reduce((sum, item) => sum + item.metaEfectiva.carb, 0) },
-    { key: "gras", icono: "🥑", label: "GRASAS", unidad: "g", actual: weekSnapshots.reduce((sum, item) => sum + item.totales.gras, 0), meta: weekSnapshots.reduce((sum, item) => sum + item.metaEfectiva.gras, 0) },
-    { key: "fibr", icono: "🌿", label: "FIBRA", unidad: "g", actual: weekSnapshots.reduce((sum, item) => sum + item.totales.fibr, 0), meta: weekSnapshots.reduce((sum, item) => sum + item.metaEfectiva.fibr, 0) },
-    { key: "agua", icono: "💧", label: "AGUA", unidad: "ml", actual: weekSnapshots.reduce((sum, item) => sum + item.totales.agua, 0), meta: weekSnapshots.reduce((sum, item) => sum + item.metaEfectiva.agua, 0) },
+    { key: "kcal", icono: "🔥", label: "KCAL", unidad: "kcal", color: COLORES.kcal, actual: weekSnapshots.reduce((sum, item) => sum + item.totales.kcal, 0), meta: weekSnapshots.reduce((sum, item) => sum + item.metaEfectiva.kcal, 0) },
+    { key: "prot", icono: "🥩", label: "PROT", unidad: "g", color: COLORES.prot, actual: weekSnapshots.reduce((sum, item) => sum + item.totales.prot, 0), meta: weekSnapshots.reduce((sum, item) => sum + item.metaEfectiva.prot, 0) },
+    { key: "carb", icono: "🍞", label: "CARBS", unidad: "g", color: COLORES.carb, actual: weekSnapshots.reduce((sum, item) => sum + item.totales.carb, 0), meta: weekSnapshots.reduce((sum, item) => sum + item.metaEfectiva.carb, 0) },
+    { key: "gras", icono: "🥑", label: "GRASAS", unidad: "g", color: COLORES.gras, actual: weekSnapshots.reduce((sum, item) => sum + item.totales.gras, 0), meta: weekSnapshots.reduce((sum, item) => sum + item.metaEfectiva.gras, 0) },
+    { key: "fibr", icono: "🌿", label: "FIBRA", unidad: "g", color: COLORES.fibr, actual: weekSnapshots.reduce((sum, item) => sum + item.totales.fibr, 0), meta: weekSnapshots.reduce((sum, item) => sum + item.metaEfectiva.fibr, 0) },
+    { key: "agua", icono: "💧", label: "AGUA", unidad: "ml", color: COLORES.agua, actual: weekSnapshots.reduce((sum, item) => sum + item.totales.agua, 0), meta: weekSnapshots.reduce((sum, item) => sum + item.metaEfectiva.agua, 0) },
   ], [weekSnapshots]);
+  const hayCambioMetasSemana = useMemo(() => weekSnapshots.some((item) => item?.hayCambioMetas), [weekSnapshots]);
   const resumenMensualItems = useMemo(() => [
     { key: "kcal", icono: "🔥", label: "KCAL", unidad: "kcal", actual: monthSnapshots.reduce((sum, item) => sum + item.totales.kcal, 0), meta: monthSnapshots.reduce((sum, item) => sum + item.metaEfectiva.kcal, 0) },
     { key: "prot", icono: "🥩", label: "PROT", unidad: "g", actual: monthSnapshots.reduce((sum, item) => sum + item.totales.prot, 0), meta: monthSnapshots.reduce((sum, item) => sum + item.metaEfectiva.prot, 0) },
@@ -775,7 +855,7 @@ useEffect(() => {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (!(vistaActual === "pdf" && historialVista === "preview" && pdfPreview?.titulo === "Resumen Diario")) return;
+    if (!(vistaActual === "pdf" && (historialVista === "diario" || (historialVista === "preview" && pdfPreview?.titulo === "Resumen Diario")))) return;
 
     const calcularAlturaScrollResumenDiario = () => {
       const viewportHeight = window.innerHeight || 800;
@@ -785,7 +865,13 @@ useEffect(() => {
       const primeraFila = resumenDiarioRowsInnerRef.current?.querySelector?.("[data-resumen-row='1']");
       const alturaFilaMedida = primeraFila ? Math.ceil(primeraFila.getBoundingClientRect().height) : 112;
       const alturaFila = Math.max(96, alturaFilaMedida);
+      const notaRect = resumenDiarioNotaRef.current?.getBoundingClientRect?.();
+      const alturaNota = Math.max(56, Math.ceil(notaRect?.height || 72));
+      const ajusteFinoScroll = 30;
+      const parking = Math.max(0, Math.round(disponiblePantalla - alturaFila - alturaNota + ajusteFinoScroll));
       setResumenDiarioRowHeight(alturaFila);
+      setResumenDiarioNotaHeight(alturaNota);
+      setResumenDiarioParkingHeight(parking);
       setResumenDiarioScrollHeight(disponiblePantalla);
     };
 
@@ -800,7 +886,7 @@ useEffect(() => {
   }, [vistaActual, historialVista, pdfPreview, resumenDiarioSemanaCerrados.length]);
 
   useEffect(() => {
-    if (!(vistaActual === "pdf" && historialVista === "preview" && pdfPreview?.titulo === "Resumen Diario")) return;
+    if (!(vistaActual === "pdf" && (historialVista === "diario" || (historialVista === "preview" && pdfPreview?.titulo === "Resumen Diario")))) return;
     const node = resumenDiarioRowsRef.current;
     if (!node) return;
     node.scrollTop = 0;
@@ -808,12 +894,37 @@ useEffect(() => {
 
 
   function ejecutarRescate() {
-    const snapshot = buildDaySnapshot({ fechaKey: fechaHoyKey, fechaISO: fechaHoyISO, registrosPrincipales, registrosColaciones, aguaExtra, diaFinalizado: true, metasActuales, segmentosMetas, totalesDia, metaEfectiva: metaEfectivaHoy });
-    setHistorialDias((prev) => upsertHistorySnapshot(prev, snapshot));
-    iniciarNuevoDia();
+    let rescued = null;
+    if (typeof window !== "undefined") {
+      const rawPending = safeJsonParse(window.localStorage.getItem(STORAGE_PENDING_DAY_KEY), null);
+      if (rawPending?.fechaKey) {
+        rescued = sanitizeCurrentDayState(rawPending, getDefaultDayState(parseDateFromKey(rawPending.fechaKey), metasActuales));
+      }
+    }
+
+    if (rescued) {
+      setFechaDiaActivo({ key: rescued.fechaKey, iso: rescued.fechaISO });
+      setRegistrosPrincipales(rescued.registrosPrincipales);
+      setRegistrosColaciones(rescued.registrosColaciones);
+      setAguaExtra(rescued.aguaExtra);
+      setDiaFinalizado(false);
+      setMetasActuales(rescued.metasActuales);
+      setSegmentosMetas(rescued.segmentosMetas);
+    }
+
+    setModoRescatePendiente(true);
+    setModalRescateAbierto(false);
+    setVistaActual("sugerencia");
+    setMenuDatosAbierto(false);
+    setAbierto(false);
+    setHomeActualizadaActiva(false);
+    setModoLectura(false);
+    setModoPostGuardado(false);
+    setMensaje("✏️ Día anterior recuperado. Puedes completar, modificar y guardar.");
   }
-  function descartarRescate() { iniciarNuevoDia(); }
+  function descartarRescate() { setModoRescatePendiente(false); iniciarNuevoDia(); }
   function iniciarNuevoDia() {
+    clearPendingDayState();
     const nuevoDia = getDefaultDayState(new Date(), metasActuales);
     setFechaDiaActivo({ key: nuevoDia.fechaKey, iso: nuevoDia.fechaISO });
     setRegistrosPrincipales(nuevoDia.registrosPrincipales);
@@ -821,12 +932,132 @@ useEffect(() => {
     setAguaExtra(nuevoDia.aguaExtra);
     setDiaFinalizado(nuevoDia.diaFinalizado);
     setSegmentosMetas([createMetaSegment(nuevoDia.fechaISO, metasActuales)]);
+    setModoRescatePendiente(false);
     setModalRescateAbierto(false);
     setVistaActual("sugerencia");
     setHomeActualizadaActiva(false);
     setMensaje("✅ ¡Nuevo día iniciado!");
   }
   function goHome() { setVistaActual("sugerencia"); setHistorialVista("menu"); setPdfPreview(null); setMenuDatosAbierto(false); setAbierto(false); if (diaFinalizado || modoPostGuardado) { setModoPostGuardado(true); setModoLectura(false); } }
+
+  function getBackupLocalStorageKeys() {
+    if (typeof window === "undefined") return [];
+    const clavesFijas = [
+      STORAGE_PROFILE_KEY,
+      STORAGE_CURRENT_DAY_KEY,
+      STORAGE_HISTORY_KEY,
+      STORAGE_PENDING_DAY_KEY,
+      "usuarioConfig",
+      "historial",
+    ];
+    const clavesDetectadas = [];
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (!key) continue;
+      if (key.startsWith("nutri_app_") || key === "usuarioConfig" || key === "historial") clavesDetectadas.push(key);
+    }
+    return Array.from(new Set([...clavesFijas, ...clavesDetectadas]));
+  }
+
+  function exportarRespaldoDatos() {
+    if (typeof window === "undefined") return;
+    try {
+      const datos = {};
+      getBackupLocalStorageKeys().forEach((key) => {
+        const value = window.localStorage.getItem(key);
+        if (value !== null && value !== undefined) datos[key] = value;
+      });
+
+      if (Object.keys(datos).length === 0) {
+        setMensaje("⚠️ No encontré datos guardados para exportar.");
+        return;
+      }
+
+      const nombreRespaldo = String((perfilUsuario?.nombre || getStoredUserName() || "usuario")).trim() || "usuario";
+      const nombreArchivoSeguro = nombreRespaldo
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-zA-Z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "usuario";
+      const fechaArchivo = formatDateKey(new Date());
+      const payload = {
+        tipo: "control-nutricional-respaldo",
+        version: 1,
+        exportadoEn: new Date().toISOString(),
+        nombre: nombreRespaldo,
+        datos,
+      };
+
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `control-nutricional-${nombreArchivoSeguro}-${fechaArchivo}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      setMensaje("✅ Respaldo exportado. Guárdalo para importarlo en Vercel.");
+      setMenuDatosAbierto(false);
+    } catch (error) {
+      console.error("Error exportando respaldo", error);
+      setMensaje("❌ No pude exportar el respaldo.");
+    }
+  }
+
+  function abrirImportarRespaldoDatos() {
+    setMenuDatosAbierto(false);
+    backupFileInputRef.current?.click();
+  }
+
+  async function importarRespaldoDatos(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const contenido = await file.text();
+      const parsed = JSON.parse(contenido);
+      const datos = parsed?.datos || parsed?.localStorage || parsed;
+      if (!datos || typeof datos !== "object" || Array.isArray(datos)) {
+        setMensaje("❌ El archivo de respaldo no tiene el formato correcto.");
+        return;
+      }
+
+      const confirmado = window.confirm(
+        "¿Importar este respaldo? La app se reiniciará y usará los datos de ese archivo en este teléfono."
+      );
+      if (!confirmado) return;
+
+      getBackupLocalStorageKeys().forEach((key) => {
+        if (key.startsWith("nutri_app_") || key === "usuarioConfig" || key === "historial") {
+          window.localStorage.removeItem(key);
+        }
+      });
+
+      Object.entries(datos).forEach(([key, value]) => {
+        if (!(key.startsWith("nutri_app_") || key === "usuarioConfig" || key === "historial")) return;
+        if (value === null || value === undefined) return;
+        window.localStorage.setItem(key, typeof value === "string" ? value : JSON.stringify(value));
+      });
+
+      setMensaje("✅ Respaldo importado. Reiniciando app...");
+      setTimeout(() => window.location.reload(), 500);
+    } catch (error) {
+      console.error("Error importando respaldo", error);
+      setMensaje("❌ No pude importar el respaldo. Revisa que sea el archivo correcto.");
+    } finally {
+      event.target.value = "";
+    }
+  }
+
+  const inputRespaldoOculto = (
+    <input
+      ref={backupFileInputRef}
+      type="file"
+      accept="application/json,.json"
+      style={{ display: "none" }}
+      onChange={importarRespaldoDatos}
+    />
+  );
 
   function handleCampoInicioChange(nombre, valor) {
     if (nombre === "nombre") { setCamposInicio((prev) => ({ ...prev, nombre: valor })); return; }
@@ -1034,7 +1265,24 @@ useEffect(() => {
   function cerrarFinalizarDia() { setModalFinalizar(null); }
   function confirmarFinalizarDia() {
     const snapshot = buildDaySnapshot({ fechaKey: fechaHoyKey, fechaISO: fechaHoyISO, registrosPrincipales, registrosColaciones, aguaExtra, diaFinalizado: true, metasActuales, segmentosMetas, totalesDia, metaEfectiva: metaEfectivaHoy });
-    setDiaFinalizado(true); setHistorialDias((prev) => upsertHistorySnapshot(prev, snapshot)); setModalFinalizar(null); setVistaActual("sugerencia"); setMensaje("✅ Día guardado y finalizado"); setModoLectura(false); setModoPostGuardado(true); setHomeActualizadaActiva(false); setMostrarControlCierre(false);
+    const hoyRealKey = formatDateKey(new Date());
+    const guardandoDiaPendiente = fechaHoyKey !== hoyRealKey;
+    setDiaFinalizado(true);
+    setHistorialDias((prev) => upsertHistorySnapshot(prev, snapshot));
+    setModalFinalizar(null);
+    setVistaActual("sugerencia");
+    setModoLectura(false);
+    setModoPostGuardado(true);
+    setHomeActualizadaActiva(false);
+    setMostrarControlCierre(false);
+    if (guardandoDiaPendiente) {
+      clearPendingDayState();
+      setModoRescatePendiente(false);
+      setMensaje("✅ Día recuperado guardado. Continuando con hoy");
+      setTimeout(() => iniciarNuevoDia(), 80);
+      return;
+    }
+    setMensaje("✅ Día guardado y finalizado");
   }
   function abrirModalMetas() { setCamposMetas({ kcal: String(metasActuales.kcal), prot: String(metasActuales.prot), carb: String(metasActuales.carb), gras: String(metasActuales.gras), fibr: String(metasActuales.fibr), agua: String(metasActuales.agua) }); setMenuDatosAbierto(false); setModalMetasAbierto(true); }
   function cerrarModalMetas() { setModalMetasAbierto(false); }
@@ -1055,10 +1303,98 @@ useEffect(() => {
   }
 
   function buildPdfHtml({ tituloExportacion, contenido }) {
-    const esResumenDiario = tituloExportacion === "Resumen Diario";
-    const bodyBg = esResumenDiario ? "#0b1220" : "#f4f7fb";
-    const sheetClass = esResumenDiario ? "sheet daily-sheet" : "sheet";
-    return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>${escapeHtml(tituloExportacion)}</title><style>:root { color-scheme: light only !important; } html, body { background: ${bodyBg} !important; color: #162235 !important; font-family: Arial, sans-serif; padding: 18px; margin: 0;} .sheet { max-width: 980px; margin: 0 auto; background: #ffffff !important; border-radius: 28px; padding: 22px 18px 24px; box-shadow: 0 14px 34px rgba(13,35,67,0.12); } .daily-sheet { max-width: none; background: transparent !important; border-radius: 0; padding: 0; box-shadow: none; } .summary-grid, .metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-bottom: 16px; } .metric { background: #ffffff !important; border: 2px solid #d9e3f0; border-radius: 24px; padding: 16px; } table { width: 100%; border-collapse: collapse; } th, td { border: 1px solid #d9e3f0; padding: 9px 6px; text-align: center; } .daily-shell { background: #08142f !important; color: #f8fafc !important; border-radius: 26px; padding: 16px 14px 14px; box-shadow: none; } .daily-head { position: sticky; top: 0; z-index: 3; background: #13203f; border: 1px solid rgba(148,163,184,0.16); border-radius: 18px; padding: 10px 12px; margin: 0 0 12px; } .daily-header-row { display: grid; grid-template-columns: 88px repeat(6, minmax(58px, 1fr)); gap: 8px; align-items: end; } .daily-header-cell { text-align: center; font-size: 10px; font-weight: 900; color: #f8fafc; line-height: 1.08; } .daily-header-cell span { display: block; font-size: 20px; margin-bottom: 3px; } .daily-scroll { max-height: 72vh; overflow-y: auto; overflow-x: hidden; padding-right: 0; } .daily-scroll::-webkit-scrollbar { width: 0; height: 0; } .daily-block { background: #0b1535; border: 1px solid rgba(148,163,184,0.12); border-radius: 22px; padding: 0; margin-bottom: 12px; } .daily-row { display: grid; grid-template-columns: 88px repeat(6, minmax(58px, 1fr)); gap: 8px; align-items: center; padding: 18px 12px; } .daily-date { text-align: left; font-weight: 900; color: #f8fafc; font-size: 11px; line-height: 1.02; text-transform: uppercase; } .daily-date small { display: block; font-size: 10px; color: #f8fafc; opacity: 0.92; margin-top: 2px; line-height: 1.0; } .daily-cell { text-align: center; min-width: 0; } .daily-actual { font-size: 13px; font-weight: 900; color: #f8fafc; line-height: 1.0; white-space: nowrap; } .daily-meta { font-size: 9px; font-weight: 800; color: #a5b4cc; margin-top: 5px; line-height: 1.0; white-space: nowrap; } .daily-combined-note { text-align: center; font-size: 12px; font-weight: 900; color: #fbbf24; padding: 0 0 12px; } .daily-empty { background: #0f172a; color: #cbd5e1; border-radius: 24px; padding: 28px 20px; text-align: center; font-weight: 700; } @media print { body { padding: 0; background: ${bodyBg} !important; } .sheet { box-shadow: none; margin: 0; max-width: none; } .daily-scroll { max-height: none; overflow: visible; } .daily-head { position: static; } }</style></head><body><div class="${sheetClass}">${contenido}</div></body></html>`;
+    const periodoLabel = getPeriodoPdfLabel(tituloExportacion, fechaBaseHoy);
+    const nombreEncabezado = escapeHtml(nombreUsuario || "Usuario");
+    const tituloSeguro = escapeHtml(tituloExportacion || "Resumen");
+    const periodoSeguro = escapeHtml(periodoLabel || "");
+    const esSemanal = tituloExportacion === "Resumen Semanal";
+    const esMensual = tituloExportacion === "Resumen Mensual";
+    const esDiario = tituloExportacion === "Resumen Diario";
+    const avisoMetas = esSemanal && hayCambioMetasSemana
+      ? `<div class="pdf-warning">⚠️ 🔀 Metas combinadas en la semana</div>`
+      : esMensual && monthSnapshots.some((item) => item?.hayCambioMetas)
+        ? `<div class="pdf-warning">⚠️ 🔀 Metas combinadas en el mes</div>`
+        : esDiario && weekSnapshots.some((item) => item?.hayCambioMetas)
+          ? `<div class="pdf-warning">⚠️ 🔀 Metas combinadas en el período mostrado</div>`
+          : "";
+    const notaTexto = esDiario
+      ? "Este informe muestra los días cerrados visibles del período. En cada nutriente, el valor superior representa el consumo registrado y el valor inferior representa la meta correspondiente."
+      : esSemanal
+        ? "Este informe muestra el avance real de la semana por nutriente. La comparación se realiza contra la meta total semanal construida con la meta efectiva de cada día."
+        : esMensual
+          ? "Este informe muestra el avance real del mes por nutriente. La comparación se realiza contra la meta total mensual construida con la meta efectiva de cada día."
+          : "Este informe muestra el consumo real comparado con la meta establecida.";
+
+    const headerHtml = `
+      <header class="pdf-header">
+        <div class="pdf-title">${tituloSeguro}</div>
+        <div class="pdf-user">${nombreEncabezado}</div>
+        <div class="pdf-period">${periodoSeguro}</div>
+      </header>`;
+
+    const footerHtml = `
+      <section class="pdf-note">
+        <strong>Nota:</strong> ${escapeHtml(notaTexto)}
+      </section>
+      <footer class="pdf-footer">Informe generado desde Control Nutricional</footer>`;
+
+    return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>${tituloSeguro}</title><style>
+:root { color-scheme: light only !important; }
+* { box-sizing: border-box; }
+html, body { background: #ffffff !important; color: #111827 !important; font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 0; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+body { padding: 18px; }
+.sheet { width: 100%; max-width: 920px; margin: 0 auto; background: #ffffff !important; color: #111827 !important; border: 1px solid #d7dde8; border-radius: 18px; padding: 18px; box-shadow: none !important; }
+.pdf-header { background: #ffffff !important; border: 2px solid #d7dde8; border-radius: 18px; padding: 14px 12px 13px; text-align: center; margin-bottom: 14px; }
+.pdf-title { color: #0f172a !important; font-size: 24px; line-height: 1.08; font-weight: 900; letter-spacing: 0.2px; }
+.pdf-user { color: #1f2937 !important; font-size: 15px; font-weight: 800; margin-top: 6px; }
+.pdf-period { color: #475569 !important; font-size: 12px; font-weight: 700; margin-top: 4px; }
+.pdf-warning { background: #fff7ed !important; color: #9a3412 !important; border: 1px solid #fed7aa; border-radius: 14px; padding: 9px 10px; text-align: center; font-size: 12px; font-weight: 900; margin: -2px 0 12px; }
+.metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 4px 0 14px; }
+.metric { background: #ffffff !important; color: #111827 !important; border: 1.5px solid #d7dde8; border-radius: 16px; padding: 12px; min-height: 145px; line-height: 1.2; font-size: 12px; font-weight: 700; display: grid; grid-template-columns: minmax(0, 1fr) 76px; gap: 8px; align-items: stretch; page-break-inside: avoid; }
+.metric-left { min-width: 0; display: flex; flex-direction: column; justify-content: space-between; }
+.metric-title { display: flex; align-items: center; gap: 6px; color: #0f172a !important; font-size: 15px; margin-bottom: 8px; font-weight: 900; line-height: 1.05; }
+.metric-icon { font-size: 19px; line-height: 1; }
+.metric-values { display: grid; gap: 6px; }
+.metric-value-block { padding-bottom: 6px; border-bottom: 1px solid #e5eaf2; }
+.metric-value-block:last-child { border-bottom: none; padding-bottom: 0; }
+.metric-number { color: #0f172a !important; font-size: 18px; font-weight: 900; line-height: 1.05; letter-spacing: 0.1px; }
+.metric-unit { font-size: 11px; font-weight: 700; margin-left: 3px; color: #111827 !important; }
+.metric-label { color: #526071 !important; font-size: 11px; font-weight: 700; margin-top: 3px; }
+.metric-progress-row { display: flex; align-items: center; gap: 7px; margin-top: 8px; white-space: nowrap; }
+.metric-progress-icon { width: 24px; height: 24px; border: 1.5px solid #ff7a00; color: #ff7a00; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 900; flex: 0 0 auto; }
+.metric-progress-label { color: #0f172a !important; font-size: 13px; font-weight: 900; }
+.metric-progress-value { color: #f97316 !important; font-size: 14px; font-weight: 900; margin-left: 2px; }
+.metric-meter-wrap { display: flex; align-items: center; justify-content: center; gap: 7px; }
+.metric-meter { width: 22px; height: 112px; border-radius: 999px; background: #eef0f4 !important; position: relative; overflow: hidden; flex: 0 0 auto; }
+.metric-meter-fill { position: absolute; left: 0; right: 0; bottom: 0; height: var(--pct); min-height: 6px; border-radius: 999px; background: linear-gradient(180deg, var(--accent2), var(--accent1)) !important; }
+ .metric-scale { height: 112px; width: 44px; position: relative; color: #475569 !important; font-size: 10.5px; font-weight: 700; flex: 0 0 44px; }
+.metric-scale span { position: absolute; left: 0; display: flex; align-items: center; line-height: 1; white-space: nowrap; }
+.metric-scale span:nth-child(1) { top: 0; transform: translateY(-50%); }
+.metric-scale span:nth-child(2) { top: 50%; transform: translateY(-50%); }
+.metric-scale span:nth-child(3) { bottom: 0; transform: translateY(50%); }
+.metric-scale span::before { content: "—"; color: #b7c0cc; margin-right: 7px; font-weight: 900; }
+.daily-shell { background: #ffffff !important; color: #111827 !important; border: 1.5px solid #d7dde8; border-radius: 16px; padding: 10px; margin-bottom: 14px; }
+.daily-head { background: #eef4ff !important; border: 1px solid #c8d7f2; border-radius: 12px; padding: 8px 7px; margin: 0 0 8px; }
+.daily-header-row, .daily-row { display: grid; grid-template-columns: 78px repeat(6, minmax(44px, 1fr)); gap: 5px; align-items: center; }
+.daily-header-cell { text-align: center; color: #0f172a !important; font-size: 8.5px; font-weight: 900; line-height: 1.06; text-transform: uppercase; }
+.daily-header-cell span { display: block; font-size: 15px; margin-bottom: 2px; }
+.daily-scroll { overflow: visible !important; max-height: none !important; }
+.daily-block { background: #ffffff !important; color: #111827 !important; border: 1px solid #e2e8f0; border-radius: 12px; margin-bottom: 8px; overflow: hidden; }
+.daily-row { padding: 10px 7px; }
+.daily-date { color: #111827 !important; font-size: 9px; font-weight: 900; line-height: 1.05; text-transform: uppercase; text-align: center; }
+.daily-date small { display: block; color: #475569 !important; font-size: 8.5px; font-weight: 800; margin-top: 2px; line-height: 1.05; }
+.daily-cell { text-align: center; min-width: 0; }
+.daily-actual { color: #0f172a !important; font-size: 10.5px; font-weight: 900; line-height: 1; white-space: nowrap; }
+.daily-meta { color: #64748b !important; font-size: 8px; font-weight: 800; line-height: 1; margin-top: 4px; white-space: nowrap; }
+.daily-combined-note { color: #9a3412 !important; background: #fff7ed !important; border-top: 1px solid #fed7aa; text-align: center; font-size: 10px; font-weight: 900; padding: 6px; }
+.daily-empty { background: #f8fafc !important; color: #475569 !important; border: 1px solid #d7dde8; border-radius: 14px; padding: 20px 14px; text-align: center; font-weight: 800; }
+.pdf-note { background: #f8fafc !important; color: #334155 !important; border: 1px solid #d7dde8; border-radius: 14px; padding: 10px 12px; font-size: 11px; line-height: 1.35; margin-top: 12px; }
+.pdf-note strong { color: #0f172a !important; }
+.pdf-footer { text-align: center; color: #64748b !important; font-size: 10px; font-weight: 800; margin-top: 10px; padding-top: 8px; border-top: 1px solid #e2e8f0; }
+table { width: 100%; border-collapse: collapse; }
+th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
+@media print { body { padding: 0; background: #ffffff !important; } .sheet { border: none; border-radius: 0; max-width: none; } }
+</style></head><body><main class="sheet">${headerHtml}${avisoMetas}${contenido}${footerHtml}</main></body></html>`;
   }
 
   function abrirVentanaImpresion(htmlDoc, tituloExportacion) {
@@ -1074,13 +1410,145 @@ useEffect(() => {
     if (pdfPreview?.html) abrirVentanaImpresion(pdfPreview.html, pdfPreview.titulo);
   }
 
-  function exportarResumen(tipo) {
+  async function generarBlobPdfDesdePreview() {
+    const iframe = previewFrameRef.current;
+    const doc = iframe?.contentDocument || iframe?.contentWindow?.document;
+    const body = doc?.body;
+    if (!body) throw new Error("preview-unavailable");
+
+    const canvas = await html2canvas(body, {
+      scale: 2,
+      useCORS: true,
+      backgroundColor: "#ffffff",
+      windowWidth: Math.max(body.scrollWidth || 0, doc?.documentElement?.scrollWidth || 0, 980),
+      windowHeight: Math.max(body.scrollHeight || 0, doc?.documentElement?.scrollHeight || 0, 1400),
+    });
+
+    const imgData = canvas.toDataURL("image/png");
+    const pdf = new jsPDF("p", "mm", "a4");
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const imgHeight = (canvas.height * pageWidth) / canvas.width;
+
+    let heightLeft = imgHeight;
+    let position = 0;
+
+    pdf.addImage(imgData, "PNG", 0, position, pageWidth, imgHeight, undefined, "FAST");
+    heightLeft -= pageHeight;
+
+    while (heightLeft > 0) {
+      position = heightLeft - imgHeight;
+      pdf.addPage();
+      pdf.addImage(imgData, "PNG", 0, position, pageWidth, imgHeight, undefined, "FAST");
+      heightLeft -= pageHeight;
+    }
+
+    return pdf.output("blob");
+  }
+
+  async function compartirPreviewActual() {
+    try {
+      setMensaje("⏳ Generando PDF...");
+
+      const blob = await generarBlobPdfDesdePreview();
+      const nombreArchivo = buildPdfFileName(pdfPreview?.titulo || "reporte", fechaBaseHoy);
+      const tituloShare = pdfPreview?.titulo || "Reporte nutricional";
+      const textoShare = `${tituloShare} · ${nombreUsuario || "Usuario"}`;
+
+      let file = null;
+      try {
+        file = new File([blob], nombreArchivo, { type: "application/pdf" });
+      } catch (fileError) {
+        console.warn("Este navegador no pudo crear el archivo PDF para compartir", fileError);
+      }
+
+      const compartirNativoDisponible =
+        typeof navigator !== "undefined" &&
+        typeof navigator.share === "function" &&
+        file;
+
+      let puedeCompartirArchivo = false;
+      if (compartirNativoDisponible) {
+        if (typeof navigator.canShare === "function") {
+          try {
+            puedeCompartirArchivo = navigator.canShare({ files: [file] });
+          } catch (canShareError) {
+            console.warn("El navegador no confirmó soporte para compartir archivos", canShareError);
+            puedeCompartirArchivo = false;
+          }
+        } else {
+          // Algunos navegadores antiguos no tienen canShare, pero sí permiten probar navigator.share.
+          puedeCompartirArchivo = true;
+        }
+      }
+
+      if (puedeCompartirArchivo) {
+        try {
+          await navigator.share({ files: [file], title: tituloShare, text: textoShare });
+          setMensaje("✅ PDF listo para enviar");
+          return;
+        } catch (shareError) {
+          const cancelled = shareError?.name === "AbortError";
+          if (cancelled) {
+            setMensaje("ℹ️ Envío cancelado");
+            return;
+          }
+          console.warn("No se pudo abrir el menú nativo para compartir PDF", shareError);
+        }
+      }
+
+      const url = URL.createObjectURL(blob);
+      let abierto = null;
+      try {
+        abierto = window.open(url, "_blank", "noopener,noreferrer");
+      } catch (openError) {
+        console.warn("No se pudo abrir el PDF en otra pestaña", openError);
+      }
+
+      if (abierto) {
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+        setMensaje("⚠️ Tu navegador no permite compartir este PDF como archivo. Abrí el PDF; usa el botón compartir del teléfono o del navegador.");
+        return;
+      }
+
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = nombreArchivo;
+      link.rel = "noopener";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 8000);
+      setMensaje("⚠️ Tu navegador no permite compartir este PDF como archivo. Lo descargué; adjúntalo manualmente en WhatsApp, Email, Mensajes o Drive.");
+    } catch (error) {
+      console.error("Error generando o compartiendo PDF", error);
+      setMensaje("❌ No se pudo generar el PDF");
+    }
+  }
+
+  function exportarResumen(tipo, abrirPreview = true) {
     if (typeof window === "undefined") return;
-    const buildMetricCards = (items) => `<div class="metrics">${items.map((item) => {
+    const buildMetricCards = (items, periodo = "semanal") => `<div class="metrics">${items.map((item) => {
         const porcentajeRaw = item.meta > 0 ? Math.round((item.actual / item.meta) * 100) : 0;
-        const faltan = Math.max(0, Math.round(item.meta - item.actual));
-        const estado = item.actual > item.meta ? "Meta superada" : item.actual === item.meta ? "Meta cumplida" : `Faltan ${faltan}${item.unidad}`;
-        return `<div class="metric"><b>${escapeHtml(item.icono)} ${escapeHtml(item.label)}</b><br/>${Math.round(item.actual)} / ${Math.round(item.meta)} ${escapeHtml(item.unidad)}<br/>${porcentajeRaw}% - ${escapeHtml(estado)}</div>`;
+        const porcentaje = Math.max(0, Math.min(porcentajeRaw, 100));
+        const [accent1, accent2] = getPdfMetricColors(item.key);
+        const metaLabel = periodo === "mensual" ? "Meta mensual" : periodo === "hoy" ? "Meta diaria" : "Meta semanal";
+        const actual = Math.round(item.actual || 0);
+        const meta = Math.round(item.meta || 0);
+        const unidad = escapeHtml(item.unidad || "");
+        return `<article class="metric" style="--pct:${porcentaje}%; --accent1:${accent1}; --accent2:${accent2};">
+          <div class="metric-left">
+            <div>
+              <div class="metric-title"><span class="metric-icon">${escapeHtml(item.icono)}</span><span>${escapeHtml(item.label)}</span></div>
+              <div class="metric-values">
+                <div class="metric-value-block"><div><span class="metric-number">${actual}</span><span class="metric-unit">${unidad}</span></div><div class="metric-label">Consumido</div></div>
+                <div class="metric-value-block"><div><span class="metric-number">${meta}</span><span class="metric-unit">${unidad}</span></div><div class="metric-label">${metaLabel}</div></div>
+              </div>
+            </div>
+            <div class="metric-progress-row"><span class="metric-progress-icon">↗</span><span class="metric-progress-label">Progreso</span><span class="metric-progress-value">${porcentajeRaw}%</span></div>
+          </div>
+          <div class="metric-meter-wrap"><div class="metric-meter"><div class="metric-meter-fill"></div></div><div class="metric-scale"><span>100%</span><span>50%</span><span>0%</span></div></div>
+        </article>`;
       }).join("")}</div>`;
 
     const buildDateCell = (fechaKey) => {
@@ -1107,12 +1575,15 @@ useEffect(() => {
     };
 
     let tituloExportacion = "Resumen"; let contenido = "";
-    if (tipo === "hoy") { tituloExportacion = "Tu Progreso de Hoy"; contenido = `<h2>TU PROGRESO DE HOY</h2>${buildMetricCards(itemsProgreso)}`; }
+    if (tipo === "hoy") { tituloExportacion = "Tu Progreso de Hoy"; contenido = `${buildMetricCards(itemsProgreso, "hoy")}`; }
     else if (tipo === "diario") { tituloExportacion = "Resumen Diario"; contenido = buildDailyBlocks(); }
-    else if (tipo === "semanal") { tituloExportacion = "Resumen Semanal"; contenido = `<h2>RESUMEN SEMANAL</h2>${buildMetricCards(resumenSemanalItems)}`; }
-    else if (tipo === "mensual") { tituloExportacion = "Resumen Mensual"; contenido = `<h2>RESUMEN MENSUAL</h2>${buildMetricCards(resumenMensualItems)}`; }
+    else if (tipo === "semanal") { tituloExportacion = "Resumen Semanal"; contenido = `${buildMetricCards(resumenSemanalItems, "semanal")}`; }
+    else if (tipo === "mensual") { tituloExportacion = "Resumen Mensual"; contenido = `${buildMetricCards(resumenMensualItems, "mensual")}`; }
     const htmlDoc = buildPdfHtml({ tituloExportacion, contenido });
-    setPdfPreview({ html: htmlDoc, titulo: tituloExportacion }); setVistaActual("pdf"); setHistorialVista("preview"); setMenuDatosAbierto(false);
+    setPdfPreview({ html: htmlDoc, titulo: tituloExportacion });
+    setVistaActual("pdf");
+    setMenuDatosAbierto(false);
+    if (abrirPreview) setHistorialVista("preview");
   }
 
   async function compartirOCopiarSugerenciaTexto() {
@@ -1203,6 +1674,24 @@ useEffect(() => {
                 <span style={styles.menuDatosOptionSub}>Ajusta tus metas del día</span>
               </button>
 
+              <button
+                type="button"
+                style={styles.menuDatosOption}
+                onClick={exportarRespaldoDatos}
+              >
+                <span style={styles.menuDatosOptionMain}>📤 Exportar respaldo</span>
+                <span style={styles.menuDatosOptionSub}>Guarda una copia de tus datos en este teléfono</span>
+              </button>
+
+              <button
+                type="button"
+                style={styles.menuDatosOption}
+                onClick={abrirImportarRespaldoDatos}
+              >
+                <span style={styles.menuDatosOptionMain}>📥 Importar respaldo</span>
+                <span style={styles.menuDatosOptionSub}>Restaura tus datos desde un archivo guardado</span>
+              </button>
+
               <div style={styles.menuDatosDivider} />
 
               <button
@@ -1271,6 +1760,22 @@ useEffect(() => {
         }}
       >
         📋 Ver registros de hoy
+      </button>
+
+      <button
+        type="button"
+        style={styles.botonPanelFinal}
+        onClick={exportarRespaldoDatos}
+      >
+        📤 Exportar respaldo
+      </button>
+
+      <button
+        type="button"
+        style={styles.botonPanelFinal}
+        onClick={abrirImportarRespaldoDatos}
+      >
+        📥 Importar respaldo
       </button>
     </div>
   </div>
@@ -1504,12 +2009,123 @@ useEffect(() => {
   );
 
   const renderPDF = () => {
-    if (historialVista === "preview" && pdfPreview?.titulo === "Resumen Diario") {
+    if (historialVista === "semanal") {
+      return (
+        <section style={styles.resumenSemanalSinMarcoExterno}>
+          <div style={styles.headerProgresoHoy}>
+            <div style={styles.headerResumenSemanalUnaLinea}>📊 RESUMEN SEMANAL</div>
+            <div style={styles.headerProgresoHoyFecha}>{rangoSemanaPreview}</div>
+          </div>
+
+          <div style={styles.botonesMenuGridPreview}>
+            <button
+              type="button"
+              style={styles.btnMenuSecundario}
+              onClick={() => {
+                setPdfPreview(null);
+                setHistorialVista("menu");
+                setVistaActual("pdf");
+              }}
+            >
+              ↩️ RESÚMENES
+            </button>
+            <button type="button" style={styles.btnMenuSecundario} onClick={goHome}>
+              🏠 HOME
+            </button>
+            <button type="button" style={styles.btnMenuSecundario} onClick={() => exportarResumen("semanal")}>
+              📄 COMPARTIR PDF
+            </button>
+          </div>
+
+          <div style={styles.subheaderResumenSemana}>
+            📈 PROGRESO SEMANAL POR NUTRIENTE
+          </div>
+
+          <div style={styles.espacioAvisoMetasCombinadasSemana}>
+            {hayCambioMetasSemana ? (
+              <MetasCombinadasAviso texto="Durante la semana se modificaron las metas. La comparación se calcula con la meta efectiva de cada día para reflejar el avance real." />
+            ) : null}
+          </div>
+
+          <div className="historial-scroll-rows" style={styles.progresoSemanalScrollBox}>
+            <div style={styles.gridProgresoInterno}>
+              {resumenSemanalItems.map((item) => (
+                <IndicadorProgreso key={item.key} {...item} esCombinada={hayCambioMetasSemana} diaFinalizado={true} resumenPlano />
+              ))}
+            </div>
+          </div>
+
+          <div style={styles.notaResumenSemana}>
+            <div style={styles.notaResumenSemanaTexto}>
+              <span style={styles.notaResumenSemanaEtiqueta}>NOTA:</span> Aquí ves el avance real de la semana por nutriente. La barra compara lo consumido contra la meta total semanal construida con la meta efectiva de cada día.
+            </div>
+          </div>
+        </section>
+      );
+    }
+
+    if (historialVista === "mensual") {
+      const hayCambioMetasMes = monthSnapshots.some((item) => item?.hayCambioMetas);
+      return (
+        <section style={styles.resumenSemanalSinMarcoExterno}>
+          <div style={styles.headerProgresoHoy}>
+            <div style={styles.headerResumenSemanalUnaLinea}>📊 RESUMEN MENSUAL</div>
+            <div style={styles.headerProgresoHoyFecha}>{formatMesHistorialTexto(fechaBaseHoy)}</div>
+          </div>
+
+          <div style={styles.botonesMenuGridPreview}>
+            <button
+              type="button"
+              style={styles.btnMenuSecundario}
+              onClick={() => {
+                setPdfPreview(null);
+                setHistorialVista("menu");
+                setVistaActual("pdf");
+              }}
+            >
+              ↩️ RESÚMENES
+            </button>
+            <button type="button" style={styles.btnMenuSecundario} onClick={goHome}>
+              🏠 HOME
+            </button>
+            <button type="button" style={styles.btnMenuSecundario} onClick={() => exportarResumen("mensual")}>
+              📄 COMPARTIR PDF
+            </button>
+          </div>
+
+          <div style={styles.subheaderResumenSemana}>
+            📈 PROGRESO MENSUAL POR NUTRIENTE
+          </div>
+
+          <div style={styles.espacioAvisoMetasCombinadasSemana}>
+            {hayCambioMetasMes ? (
+              <MetasCombinadasAviso texto="Durante el mes se modificaron las metas. La comparación se calcula con la meta efectiva de cada día para reflejar el avance real." />
+            ) : null}
+          </div>
+
+          <div className="historial-scroll-rows" style={styles.progresoSemanalScrollBox}>
+            <div style={styles.gridProgresoInterno}>
+              {resumenMensualItems.map((item) => (
+                <IndicadorProgreso key={item.key} {...item} esCombinada={hayCambioMetasMes} diaFinalizado={true} resumenPlano />
+              ))}
+            </div>
+          </div>
+
+          <div style={styles.notaResumenSemana}>
+            <div style={styles.notaResumenSemanaTexto}>
+              <span style={styles.notaResumenSemanaEtiqueta}>NOTA:</span> Aquí ves el avance real del mes por nutriente. La barra compara lo consumido contra la meta total mensual construida con la meta efectiva de cada día.
+            </div>
+          </div>
+        </section>
+      );
+    }
+
+    if (historialVista === "diario") {
       const viewportWidth = typeof window !== "undefined" ? window.innerWidth : 430;
       const previewEsMovil = viewportWidth <= 430;
       const columnasResumenDiario = previewEsMovil
-        ? "60px repeat(6, minmax(0, 1fr))"
-        : "74px repeat(6, minmax(0, 1fr))";
+        ? "72px repeat(6, minmax(0, 1fr))"
+        : "88px repeat(6, minmax(0, 1fr))";
       const fontPct = previewEsMovil ? "0.72rem" : "0.82rem";
       const fontMeta = previewEsMovil ? "0.52rem" : "0.60rem";
       const fontFecha = previewEsMovil ? "0.56rem" : "0.66rem";
@@ -1525,8 +2141,8 @@ useEffect(() => {
           style={{
             width: "100%",
             maxWidth: previewEsMovil ? "430px" : "500px",
-            margin: "0 auto 18px",
-            padding: previewEsMovil ? "8px 6px 10px" : "10px 8px 12px",
+            margin: "-10px auto 18px",
+            padding: previewEsMovil ? "2px 6px 10px" : "4px 8px 12px",
             boxSizing: "border-box",
             overflow: "visible",
             background: "transparent",
@@ -1541,17 +2157,17 @@ useEffect(() => {
               position: "sticky",
               top: 0,
               zIndex: 4,
-              background: "#050912",
-              paddingBottom: "6px",
+              background: "transparent",
+              paddingBottom: "2px",
             }}
           >
-            <div style={{ textAlign: "center", marginTop: "2px", marginBottom: "8px" }}>
+            <div style={{ textAlign: "center", marginTop: "0px", marginBottom: "10px" }}>
               <div
                 style={{
                   color: "#8f96a4",
                   fontWeight: 900,
                   fontSize: previewEsMovil ? "0.9rem" : "0.98rem",
-                  lineHeight: 1.2,
+                  lineHeight: 1.18,
                 }}
               >
                 {rangoSemanaPreview}
@@ -1563,7 +2179,7 @@ useEffect(() => {
                 display: "grid",
                 gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
                 gap: previewEsMovil ? "6px" : "8px",
-                marginBottom: "8px",
+                marginBottom: "10px",
               }}
             >
               <button
@@ -1604,7 +2220,7 @@ useEffect(() => {
                 }}
                 onClick={() => exportarResumen("diario")}
               >
-                📄 EXPORTAR
+                📄 COMPARTIR PDF
               </button>
             </div>
 
@@ -1613,10 +2229,11 @@ useEffect(() => {
                 background: "transparent",
                 border: "none",
                 borderRadius: 0,
-                padding: previewEsMovil ? "4px 2px 6px" : "4px 4px 6px",
-                marginBottom: "6px",
+                padding: previewEsMovil ? "8px 2px 10px" : "8px 4px 10px",
+                marginBottom: "8px",
                 overflow: "visible",
                 boxSizing: "border-box",
+                borderTop: "1px solid rgba(148,163,184,0.32)",
                 borderBottom: "1px solid rgba(148,163,184,0.42)",
               }}
             >
@@ -1651,15 +2268,10 @@ useEffect(() => {
                       textAlign: "center",
                       minWidth: 0,
                       width: "100%",
-                      paddingLeft:
-                        idx === 0 ? (previewEsMovil ? "0px" : "1px")
-                        : idx === 1 ? (previewEsMovil ? "14px" : "16px")
-                        : idx === 2 ? (previewEsMovil ? "12px" : "14px")
-                        : 0,
-                      paddingRight:
-                        idx === 6 ? (previewEsMovil ? "8px" : "10px")
-                        : idx === 5 ? (previewEsMovil ? "2px" : "4px")
-                        : 0,
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      justifyContent: "center",
                     }}
                   >
                     <div style={{ fontSize: previewEsMovil ? "0.98rem" : "1.12rem", marginBottom: "3px" }}>{icono}</div>
@@ -1754,7 +2366,6 @@ useEffect(() => {
                             textAlign: "center",
                             minWidth: 0,
                             width: "100%",
-                            transform: "translateX(-16px)",
                           }}
                         >
                           <div>{dow},</div>
@@ -1779,14 +2390,6 @@ useEffect(() => {
                               alignItems: "center",
                               justifyContent: "center",
                               textAlign: "center",
-                              paddingLeft:
-                                idx === 0 ? (previewEsMovil ? "16px" : "18px")
-                                : idx === 1 ? (previewEsMovil ? "12px" : "14px")
-                                : 0,
-                              paddingRight:
-                                idx === 5 ? (previewEsMovil ? "8px" : "10px")
-                                : idx === 4 ? (previewEsMovil ? "2px" : "4px")
-                                : 0,
                             }}
                           >
                             <div
@@ -1816,26 +2419,17 @@ useEffect(() => {
                         ))}
                       </div>
                       {row.hayCambioMetas ? (
-                        <div
-                          style={{
-                            textAlign: "center",
-                            fontSize: "0.82rem",
-                            fontWeight: 900,
-                            color: "#fbbf24",
-                            marginTop: "8px",
-                          }}
-                        >
-                          ⚠️ 🔀 Metas combinadas
-                        </div>
+                        <MetasCombinadasAviso compacto />
                       ) : null}
                     </div>
                   );
                 })}
                 <div
+                  ref={resumenDiarioNotaRef}
                   style={{
                     borderTop: "1px solid rgba(148,163,184,0.38)",
                     padding: previewEsMovil ? "10px 10px 10px" : "12px 12px 12px",
-                    background: "rgba(255,255,255,0.02)",
+                    background: "transparent",
                   }}
                 >
                   <div style={{ color: "#e5e7eb", fontWeight: 900, fontSize: previewEsMovil ? "0.72rem" : "0.78rem", marginBottom: "4px", textAlign: "center" }}>
@@ -1848,7 +2442,7 @@ useEffect(() => {
                 <div
                   aria-hidden="true"
                   style={{
-                    height: `${Math.max(260, Math.round(resumenDiarioScrollHeight - (resumenDiarioRowHeight * 0.35)))}px`,
+                    height: `${resumenDiarioParkingHeight}px`,
                     background: "transparent",
                   }}
                 />
@@ -1862,10 +2456,21 @@ useEffect(() => {
 
     if (historialVista === "preview" && pdfPreview) {
       return (
-        <section style={styles.cardRegistros}>
+        <section style={styles.previewPdfShell}>
           <div style={styles.previewPdfTopActions}>
-            <button type="button" style={styles.previewPdfBackBtn} onClick={goHome}>← VOLVER A HOME</button>
-            <button type="button" style={styles.previewPdfPrintBtn} onClick={() => exportarResumen("diario")}>📄 IMPRIMIR / COMPARTIR</button>
+            <button
+              type="button"
+              style={styles.previewPdfBackBtn}
+              onClick={() => {
+                if (pdfPreview?.titulo === "Resumen Diario") setHistorialVista("diario");
+                else if (pdfPreview?.titulo === "Resumen Semanal") setHistorialVista("semanal");
+                else if (pdfPreview?.titulo === "Resumen Mensual") setHistorialVista("mensual");
+                else setHistorialVista("menu");
+              }}
+            >
+              ↩️ RESÚMENES
+            </button>
+            <button type="button" style={styles.previewPdfPrintBtn} onClick={compartirPreviewActual}>📄 COMPARTIR PDF</button>
           </div>
           <div style={styles.previewPdfFrameWrap}><iframe ref={previewFrameRef} title={pdfPreview.titulo} srcDoc={pdfPreview.html} style={styles.previewPdfFrame} /></div>
         </section>
@@ -1876,30 +2481,252 @@ useEffect(() => {
         <button type="button" style={styles.homeTopBtn} onClick={goHome} aria-label="Volver a inicio">🏠</button>
         <div style={styles.headerTusRegistros}><span style={styles.emojiTusRegistros}>📄</span><span style={styles.tituloTusRegistros}>HISTORIAL</span></div>
         <div style={styles.botonesMenuGrid}>
-          <button type="button" style={styles.btnMenuSecundario} onClick={() => { setVistaActual("pdf"); setHistorialVista("diario"); exportarResumen("diario"); }}>DIARIO</button>
-          <button type="button" style={styles.btnMenuSecundario} onClick={() => { setVistaActual("pdf"); setHistorialVista("semanal"); exportarResumen("semanal"); }}>SEMANAL</button>
-          <button type="button" style={styles.btnMenuSecundario} onClick={() => { setVistaActual("pdf"); setHistorialVista("mensual"); exportarResumen("mensual"); }}>MENSUAL</button>
+          <button type="button" style={styles.btnMenuSecundario} onClick={() => { setVistaActual("pdf"); setHistorialVista("diario"); setPdfPreview(null); }}>DIARIO</button>
+          <button type="button" style={styles.btnMenuSecundario} onClick={() => { setVistaActual("pdf"); setHistorialVista("semanal"); setPdfPreview(null); }}>SEMANAL</button>
+          <button type="button" style={styles.btnMenuSecundario} onClick={() => { setVistaActual("pdf"); setHistorialVista("mensual"); setPdfPreview(null); }}>MENSUAL</button>
         </div>
       </section>
     );
   };
 
   if (!setupInicialCompleto) {
+    if (mostrarIntroSetup) {
+      return (
+        <div style={styles.app}>
+          {inputRespaldoOculto}
+          <div style={{
+            ...styles.screen,
+            justifyContent: "center",
+            minHeight: "100vh",
+            background:
+              "radial-gradient(circle at 50% 10%, rgba(59, 130, 246, 0.18) 0%, rgba(8, 13, 28, 0.96) 38%, #050713 100%)",
+          }}>
+            <section style={{
+              width: "100%",
+              maxWidth: "390px",
+              margin: "0 auto",
+              padding: "34px 22px 30px",
+              borderRadius: "32px",
+              border: "1px solid rgba(255,255,255,0.08)",
+              background:
+                "linear-gradient(180deg, rgba(17, 24, 39, 0.88) 0%, rgba(5, 8, 20, 0.96) 100%)",
+              boxShadow: "0 24px 60px rgba(0,0,0,0.45)",
+              textAlign: "center",
+              position: "relative",
+              overflow: "hidden",
+            }}>
+              <div style={{
+                position: "absolute",
+                inset: "-80px -60px auto auto",
+                width: "170px",
+                height: "170px",
+                borderRadius: "999px",
+                background: "rgba(34, 197, 94, 0.12)",
+                filter: "blur(2px)",
+              }} />
+              <div style={{
+                position: "absolute",
+                left: "-60px",
+                bottom: "-70px",
+                width: "160px",
+                height: "160px",
+                borderRadius: "999px",
+                background: "rgba(59, 130, 246, 0.12)",
+                filter: "blur(2px)",
+              }} />
+              <div style={{ position: "relative", zIndex: 1 }}>
+                <div style={{ fontSize: "3.2rem", marginBottom: "16px", lineHeight: 1 }}>👋</div>
+                <div style={{
+                  color: "#ffffff",
+                  fontWeight: 950,
+                  fontSize: "1.75rem",
+                  letterSpacing: "0.04em",
+                  lineHeight: 1.12,
+                  marginBottom: "10px",
+                  textTransform: "uppercase",
+                }}>
+                  CONTROL<br />NUTRICIONAL
+                </div>
+                <div style={{
+                  color: "#b9c3d7",
+                  fontWeight: 750,
+                  fontSize: "0.98rem",
+                  lineHeight: 1.35,
+                  marginBottom: "32px",
+                }}>
+                  Tu progreso diario,<br />bajo control
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMostrarIntroSetup(false)}
+                  style={{
+                    border: "1px solid rgba(143,216,87,0.65)",
+                    borderRadius: "999px",
+                    padding: "11px 22px",
+                    background: "rgba(26, 42, 16, 0.78)",
+                    color: "#f8fff2",
+                    fontWeight: 900,
+                    fontSize: "0.88rem",
+                    letterSpacing: "0.04em",
+                    boxShadow: "0 0 18px rgba(143,216,87,0.16)",
+                    cursor: "pointer",
+                  }}
+                >
+                  ⚙️ CONFIGURAR
+                </button>
+
+                <div style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: "10px",
+                  marginTop: "18px",
+                }}>
+                  <button
+                    type="button"
+                    onClick={exportarRespaldoDatos}
+                    style={{
+                      border: "1px solid rgba(255,255,255,0.12)",
+                      borderRadius: "14px",
+                      padding: "10px 8px",
+                      background: "rgba(3,6,13,0.46)",
+                      color: "#e8eefb",
+                      fontWeight: 850,
+                      fontSize: "0.78rem",
+                      cursor: "pointer",
+                    }}
+                  >
+                    📤 Exportar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={abrirImportarRespaldoDatos}
+                    style={{
+                      border: "1px solid rgba(143,216,87,0.45)",
+                      borderRadius: "14px",
+                      padding: "10px 8px",
+                      background: "rgba(26,42,16,0.38)",
+                      color: "#f8fff2",
+                      fontWeight: 850,
+                      fontSize: "0.78rem",
+                      cursor: "pointer",
+                    }}
+                  >
+                    📥 Importar
+                  </button>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div style={styles.app}>
-        <div style={styles.screen}>
-          <h1 style={styles.titulo}>Bienvenido</h1>
-          <section style={{ ...styles.card, maxWidth: "820px", margin: "0 auto", padding: "22px 18px 26px" }}>
+        {inputRespaldoOculto}
+        <div style={{ ...styles.screen, paddingTop: "18px" }}>
+          <section style={{
+            ...styles.card,
+            maxWidth: "820px",
+            margin: "0 auto",
+            padding: "22px 18px 26px",
+            background: "linear-gradient(180deg, #101827 0%, #080d1c 100%)",
+            border: "1px solid rgba(255,255,255,0.08)",
+          }}>
             <div style={{ textAlign: "center", marginBottom: "18px" }}>
-              <div style={{ fontSize: "2rem", marginBottom: "8px" }}>👋</div>
-              <div style={{ color: "#ffffff", fontWeight: 900, fontSize: "1.55rem", marginBottom: "8px" }}>CONTROL TOTAL</div>
-              <div style={{ color: "#c7cfdd", fontWeight: 700, fontSize: "0.98rem" }}>Ingresa tu nombre y tus metas iniciales para comenzar.</div>
+              <div style={{ fontSize: "2.25rem", marginBottom: "8px" }}>👋</div>
+              <div style={{
+                color: "#ffffff",
+                fontWeight: 950,
+                fontSize: "1.48rem",
+                marginBottom: "6px",
+                letterSpacing: "0.03em",
+                textTransform: "uppercase",
+              }}>
+                CONTROL NUTRICIONAL
+              </div>
+              <div style={{ color: "#c7cfdd", fontWeight: 750, fontSize: "0.95rem" }}>
+                Configura tu perfil inicial
+              </div>
             </div>
-            <div style={{ ...styles.campo, opacity: 1, marginBottom: "14px" }}>
-              <div style={styles.campoLabel}>QUIÉN USARÁ LA APP</div>
-              <div style={styles.valorWrap}><input type="text" value={camposInicio.nombre} onChange={(e) => handleCampoInicioChange("nombre", e.target.value)} placeholder="Tu nombre" style={styles.campoInput} /><div style={styles.campoUnidad}>👤</div></div>
+
+            <div style={{
+              marginBottom: "16px",
+              padding: "14px",
+              borderRadius: "20px",
+              background: "rgba(26,42,16,0.38)",
+              border: "1px solid rgba(143,216,87,0.34)",
+            }}>
+              <div style={{ color: "#ffffff", fontWeight: 900, fontSize: "0.92rem", marginBottom: "6px" }}>
+                📦 ¿Ya tienes un respaldo?
+              </div>
+              <div style={{ color: "#c7cfdd", fontWeight: 650, fontSize: "0.82rem", lineHeight: 1.35, marginBottom: "12px" }}>
+                Importa aquí tus datos anteriores para no empezar desde cero.
+              </div>
+              <button
+                type="button"
+                style={{
+                  width: "100%",
+                  border: "1px solid rgba(143,216,87,0.48)",
+                  borderRadius: "16px",
+                  padding: "12px",
+                  color: "#f8fff2",
+                  fontWeight: 900,
+                  fontSize: "0.9rem",
+                  cursor: "pointer",
+                  background: "rgba(26, 42, 16, 0.82)",
+                }}
+                onClick={abrirImportarRespaldoDatos}
+              >
+                📥 IMPORTAR RESPALDO
+              </button>
             </div>
-            <div style={{ color: "#ffffff", fontWeight: 900, margin: "12px 0 14px", fontSize: "1.02rem" }}>Tus metas iniciales</div>
+
+            <div style={{
+              marginBottom: "16px",
+              padding: "14px",
+              borderRadius: "20px",
+              background: "rgba(3,6,13,0.92)",
+              border: "1px solid #1e2635",
+              boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.015)",
+            }}>
+              <div style={{
+                color: "#ffffff",
+                fontWeight: 900,
+                fontSize: "0.88rem",
+                marginBottom: "10px",
+                letterSpacing: "0.02em",
+              }}>
+                👤 ¿QUIÉN USARÁ LA APP?
+              </div>
+              <div style={{ ...styles.valorWrap, minHeight: "48px" }}>
+                <input
+                  type="text"
+                  value={camposInicio.nombre}
+                  onChange={(e) => handleCampoInicioChange("nombre", e.target.value)}
+                  placeholder="Tu nombre"
+                  style={{
+                    ...styles.campoInput,
+                    textAlign: "left",
+                    paddingLeft: "14px",
+                    fontSize: "1.05rem",
+                    fontWeight: 800,
+                  }}
+                />
+                <div style={styles.campoUnidad}>👤</div>
+              </div>
+            </div>
+
+            <div style={{
+              color: "#ffffff",
+              fontWeight: 950,
+              margin: "14px 0 14px",
+              fontSize: "1.03rem",
+              textAlign: "center",
+              letterSpacing: "0.02em",
+            }}>
+              🎯 TUS METAS
+            </div>
             <div style={styles.gridRegistro}>
               <Campo label="KCAL" icono="🔥" unidad="kcal" valor={camposInicio.kcal} onChange={(value) => handleCampoInicioChange("kcal", value)} />
               <Campo label="PROT" icono="🥩" unidad="gr" valor={camposInicio.prot} onChange={(value) => handleCampoInicioChange("prot", value)} />
@@ -1908,7 +2735,26 @@ useEffect(() => {
               <Campo label="FIBRA" icono="🌿" unidad="gr" valor={camposInicio.fibr} onChange={(value) => handleCampoInicioChange("fibr", value)} />
               <Campo label="AGUA" icono="💧" unidad="ml" valor={camposInicio.agua} onChange={(value) => handleCampoInicioChange("agua", value)} />
             </div>
-            <button type="button" style={{ ...styles.btnPrincipalAzul, marginTop: "18px" }} onClick={confirmarSetupInicial}>GUARDAR Y CONTINUAR</button>
+
+            <button
+              type="button"
+              style={{
+                width: "100%",
+                border: "none",
+                borderRadius: "18px",
+                padding: "16px",
+                color: "#ffffff",
+                fontWeight: 950,
+                fontSize: "1.02rem",
+                cursor: "pointer",
+                background: "linear-gradient(180deg, #39d56f 0%, #159447 100%)",
+                boxShadow: "0 12px 26px rgba(21,148,71,0.26)",
+                marginTop: "18px",
+              }}
+              onClick={confirmarSetupInicial}
+            >
+              ✅ GUARDAR Y ENTRAR
+            </button>
             {mensaje ? <div style={styles.mensaje}>{mensaje}</div> : null}
           </section>
         </div>
@@ -1918,6 +2764,7 @@ useEffect(() => {
 
   return (
     <div style={styles.app}>
+      {inputRespaldoOculto}
       <div style={styles.screen}>
         
         {vistaActual === "sugerencia" ? (
@@ -1927,7 +2774,7 @@ useEffect(() => {
             </h1>
             <div style={styles.fecha}>{fechaBonita}</div>
           </div>
-        ) : vistaActual === "progreso" || vistaActual === "modificar" ? null : (
+        ) : vistaActual === "progreso" || vistaActual === "modificar" || ocultarTituloSuperiorPdf ? null : (
           <h1 style={vistaActual === "pdf" ? styles.tituloPdf : styles.titulo}>{tituloPantalla}</h1>
         )}
 
@@ -1964,8 +2811,7 @@ useEffect(() => {
                  {itemsProgreso.map((item) => <IndicadorProgreso key={item.key} {...item} esCombinada={hayCambioMetasHoy} />)}
               </div>
             </div>
-            <button type="button" style={styles.btnMenuSecundario} onClick={() => exportarResumen("hoy")}>📄 EXPORTAR PDF</button>
-          </section>
+                      </section>
         ) : null}
 
         {vistaActual === "pdf" ? renderPDF() : null}
@@ -2065,7 +2911,7 @@ function ModalRescateDia({ fechaKey, onGuardar, onDescartar }) {
         <div style={styles.confirmMensaje}>Detectamos que no cerraste tu registro del <br/><span style={{color: "#ffd34d"}}>{fechaBonita}</span>.</div>
         <div style={styles.confirmDetalle}>¿Qué deseas hacer con esos datos?</div>
         <div style={styles.confirmButtonsWrapColumn}>
-          <button type="button" onClick={onGuardar} style={styles.confirmPrimaryBtn}>RECUPERAR Y GUARDAR</button>
+          <button type="button" onClick={onGuardar} style={styles.confirmPrimaryBtn}>RECUPERAR Y MODIFICAR</button>
           <button type="button" onClick={onDescartar} style={styles.confirmSecondaryBtnSolo}>DESCARTAR Y EMPEZAR HOY</button>
         </div>
       </div>
@@ -2122,8 +2968,8 @@ function PromptColacionModal({ promptColacionActiva, onRegistrar, onOmitir }) {
   return (
     <div style={styles.confirmOverlay}>
       <div style={styles.confirmCard}>
-        <div style={styles.confirmTitulo}>COLACIÓN PENDIENTE</div>
-        <div style={styles.confirmRegistroRow}><span style={styles.confirmRegistroIcono}>{promptColacionActiva.icono}</span><span style={styles.confirmRegistroTexto}>{promptColacionActiva.label.toUpperCase()}</span></div>
+        <div style={styles.confirmTituloPendiente}>COLACIÓN PENDIENTE</div>
+        <div style={styles.confirmRegistroRow}><span style={styles.confirmRegistroIcono}>{promptColacionActiva.icono}</span><span style={styles.confirmRegistroTextoPendiente}>{promptColacionActiva.label.toUpperCase()}</span></div>
         <div style={styles.confirmMensaje}>Antes de seguir, confirma la colación que corresponde.</div>
         <div style={styles.confirmDetalle}>Puedes ingresarla ahora o marcar que no hubo colación para seguir con la siguiente ingesta principal.</div>
         <div style={styles.confirmButtonsWrapColumn}>
@@ -2218,7 +3064,40 @@ function getEstadoEmocionalProgreso(p, diaFinalizado) {
   return null;
 }
 
-function IndicadorProgreso({ icono, label, unidad, actual, meta, color, esCombinada, diaFinalizado = false }) {
+function MetasCombinadasAviso({ texto = "Durante el día se modificaron las metas. El cálculo del progreso combina la meta anterior con la nueva para reflejar el avance real.", compacto = false }) {
+  const [abierto, setAbierto] = useState(false);
+  return (
+    <div style={compacto ? styles.metasCombinadasWrapCompacto : styles.metasCombinadasWrap}>
+      <style>{`
+        @keyframes pulseMetasCombinadas {
+          0% { transform: scale(1); filter: brightness(1); box-shadow: 0 0 0 rgba(251,191,36,0); }
+          50% { transform: scale(1.12); filter: brightness(1.25); box-shadow: 0 0 16px rgba(251,191,36,0.55); }
+          100% { transform: scale(1); filter: brightness(1); box-shadow: 0 0 0 rgba(251,191,36,0); }
+        }
+      `}</style>
+      <button
+        type="button"
+        aria-label="Metas combinadas"
+        title="Metas combinadas"
+        style={compacto ? styles.metasCombinadasBtnCompacto : styles.metasCombinadasBtn}
+        onClick={(e) => {
+          e.stopPropagation();
+          setAbierto((prev) => !prev);
+        }}
+      >
+        ⚠️ 🔀
+      </button>
+      {abierto ? (
+        <div style={compacto ? styles.metasCombinadasTooltipCompacto : styles.metasCombinadasTooltip}>
+          <div style={styles.metasCombinadasTooltipTitulo}>⚠️ Metas combinadas</div>
+          <div>{texto}</div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function IndicadorProgreso({ icono, label, unidad, actual, meta, color, esCombinada, diaFinalizado = false, resumenPlano = false }) {
   const [mostrarInfo, setMostrarInfo] = useState(false);
   const porcentajeRaw = meta > 0 ? (actual / meta) * 100 : 0;
   const porcentaje = Math.min(100, Math.max(0, porcentajeRaw));
@@ -2255,17 +3134,9 @@ function IndicadorProgreso({ icono, label, unidad, actual, meta, color, esCombin
         </div>
 
         {esCombinada ? (
-          <div style={styles.infoIconWrap} onClick={() => setMostrarInfo(!mostrarInfo)}>
-            ⓘ
-          </div>
+          <MetasCombinadasAviso />
         ) : null}
       </div>
-
-      {mostrarInfo ? (
-        <div style={styles.infoTooltip}>
-          * Meta ajustada porque cambiaste tus objetivos después de iniciar el día.
-        </div>
-      ) : null}
 
       <div style={styles.progresoCaraACara}>
         <div style={{ ...styles.progresoConsumido, color: colorDinamico }}>
@@ -2299,25 +3170,33 @@ function IndicadorProgreso({ icono, label, unidad, actual, meta, color, esCombin
         </div>
 
         <div style={styles.progresoTextosAbajo}>
-          <span style={{ color: "#98a0ae", fontSize: "0.85rem", fontWeight: 700 }}>
-            {estado ? (
-              <>
-                <span
-                  style={{
-                    display: "inline-block",
-                    transform: estado.emoji.includes("🏃") ? "scaleX(-1)" : "none",
-                  }}
-                >
-                  {estado.emoji}
-                </span>{" "}
-                {estado.texto}
-              </>
-            ) : ""}
-          </span>
+          {resumenPlano ? (
+            <span style={{ color: "#98a0ae", fontSize: "0.85rem", fontWeight: 700 }}>
+              {`Progreso ${Math.round(porcentajeRaw)}%`}
+            </span>
+          ) : (
+            <>
+              <span style={{ color: "#98a0ae", fontSize: "0.85rem", fontWeight: 700 }}>
+                {estado ? (
+                  <>
+                    <span
+                      style={{
+                        display: "inline-block",
+                        transform: estado.emoji.includes("🏃") ? "scaleX(-1)" : "none",
+                      }}
+                    >
+                      {estado.emoji}
+                    </span>{" "}
+                    {estado.texto}
+                  </>
+                ) : ""}
+              </span>
 
-          <span style={{ fontWeight: 900, color: "#ffffff" }}>
-            {Math.round(porcentajeRaw)}%
-          </span>
+              <span style={{ fontWeight: 900, color: "#ffffff" }}>
+                {Math.round(porcentajeRaw)}%
+              </span>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -2346,13 +3225,26 @@ const styles = {
   cardRegistros: { ...cardBase, padding: "clamp(14px, 4vw, 18px)", marginBottom: "18px" },
   
   cardProgresoContainer: { ...cardBase, padding: "20px 16px 18px" },
+  resumenSemanalSinMarcoExterno: { width: "100%", padding: "2px 0 0" },
+  headerResumenPeriodoCompacto: { textAlign: "center", marginBottom: "16px", paddingLeft: "6px", paddingRight: "6px" },
+  headerResumenPeriodoTitulo: { fontSize: "clamp(1.15rem, 3.6vw, 1.45rem)", fontWeight: 900, lineHeight: 1.08, color: "#ffffff", textTransform: "uppercase", whiteSpace: "pre-line", marginBottom: "10px" },
+  headerResumenPeriodoFecha: { color: "#69b7ff", fontSize: "clamp(0.95rem, 3.6vw, 1.1rem)", fontWeight: 900, textTransform: "uppercase", lineHeight: 1.2 },
+  botonesMenuGridPreview: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "10px", marginBottom: "16px", alignItems: "stretch" },
   homeTopBtnProgreso: { position: "absolute", top: "16px", right: "16px", width: "42px", height: "42px", borderRadius: "999px", border: "1px solid #3b4252", background: "#141a24", cursor: "pointer", fontSize: "1.15rem", zIndex: 10 },
-  headerProgresoHoy: { textAlign: "center", marginBottom: "18px", paddingLeft: "42px", paddingRight: "42px" },
+  headerProgresoHoy: { textAlign: "center", marginBottom: "14px", paddingLeft: "18px", paddingRight: "18px" },
   headerProgresoHoyTitulo: { fontSize: "clamp(1.05rem, 3.1vw, 1.28rem)", fontWeight: 800, lineHeight: 1.15, color: "#ffffff", textTransform: "uppercase", whiteSpace: "pre-line" },
-  headerProgresoHoyFecha: { marginTop: "10px", color: "#69b7ff", fontSize: "clamp(0.85rem, 3.4vw, 1rem)", fontWeight: 800, textTransform: "uppercase", lineHeight: 1.25 },
+  headerResumenSemanalUnaLinea: { fontSize: "clamp(1rem, 3vw, 1.18rem)", fontWeight: 900, lineHeight: 1, color: "#ffffff", textTransform: "uppercase", whiteSpace: "nowrap", letterSpacing: "0.02em" },
+  headerProgresoHoyFecha: { marginTop: "6px", color: "#69b7ff", fontSize: "clamp(0.84rem, 3.2vw, 0.98rem)", fontWeight: 800, textTransform: "uppercase", lineHeight: 1.15 },
+  subheaderResumenSemana: { textAlign: "center", color: "#e8edf7", fontSize: "0.82rem", fontWeight: 900, letterSpacing: "0.04em", marginBottom: "4px", marginTop: "-2px" },
+  espacioAvisoMetasCombinadasSemana: { minHeight: "28px", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "8px" },
+  avisoMetasCombinadasSemanaInline: { color: "#ffd36b", fontSize: "0.8rem", fontWeight: 900, textAlign: "center", lineHeight: 1.15 },
   
   progresoScrollBox: { background: "#030408", border: "1px solid #1e2635", borderRadius: "20px", padding: "12px", maxHeight: "56vh", overflowY: "auto", marginBottom: "18px", WebkitOverflowScrolling: "touch", boxShadow: "inset 0 4px 12px rgba(0,0,0,0.5)" },
+  progresoSemanalScrollBox: { background: "#030408", border: "1px solid #1e2635", borderRadius: "20px", padding: "12px", maxHeight: "52vh", overflowY: "auto", marginBottom: "16px", WebkitOverflowScrolling: "touch", boxShadow: "inset 0 4px 12px rgba(0,0,0,0.5)" },
   gridProgresoInterno: { display: "grid", gap: "12px" },
+  notaResumenSemana: { marginTop: "0", padding: "0 10px 4px", textAlign: "center" },
+  notaResumenSemanaEtiqueta: { color: "#e5e7eb", fontWeight: 900, marginRight: "6px" },
+  notaResumenSemanaTexto: { color: "#a5b4cc", fontSize: "0.78rem", lineHeight: 1.45, maxWidth: "560px", margin: "0 auto" },
   
   // 🔥 ESTILOS NUEVOS PARA LAS TARJETAS PREMIUM DE PROGRESO
   progresoItemPremium: { background: "#0a0d16", border: "1px solid #1e2635", borderRadius: "20px", padding: "18px", marginBottom: "0px", position: "relative" },
@@ -2361,6 +3253,13 @@ const styles = {
   progresoCardTitulo: { color: "#dce3ef", fontSize: "0.95rem", fontWeight: 900, letterSpacing: "0.5px" },
   infoIconWrap: { color: "#69b7ff", fontSize: "0.9rem", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", width: "24px", height: "24px", borderRadius: "50%", background: "rgba(105, 183, 255, 0.1)", fontWeight: 900 },
   infoTooltip: { background: "#1a2436", color: "#8cbcf5", padding: "12px 14px", borderRadius: "12px", fontSize: "0.85rem", fontWeight: 700, marginBottom: "14px", border: "1px solid #2e4163" },
+  metasCombinadasWrap: { position: "relative", display: "inline-flex", alignItems: "center", justifyContent: "center", zIndex: 20 },
+  metasCombinadasWrapCompacto: { position: "relative", display: "flex", alignItems: "center", justifyContent: "center", marginTop: "8px", zIndex: 20 },
+  metasCombinadasBtn: { border: "1px solid rgba(251,191,36,0.55)", background: "rgba(251,191,36,0.14)", color: "#fbbf24", borderRadius: "999px", width: "46px", height: "28px", fontSize: "1rem", fontWeight: 900, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", animation: "pulseMetasCombinadas 1.8s ease-in-out infinite" },
+  metasCombinadasBtnCompacto: { border: "1px solid rgba(251,191,36,0.55)", background: "rgba(251,191,36,0.14)", color: "#fbbf24", borderRadius: "999px", minWidth: "54px", height: "30px", padding: "0 10px", fontSize: "1rem", fontWeight: 900, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", animation: "pulseMetasCombinadas 1.8s ease-in-out infinite" },
+  metasCombinadasTooltip: { position: "absolute", right: 0, top: "34px", width: "min(260px, 72vw)", background: "#151b27", color: "#e5e7eb", padding: "12px 14px", borderRadius: "14px", fontSize: "0.78rem", fontWeight: 750, lineHeight: 1.35, border: "1px solid rgba(251,191,36,0.35)", boxShadow: "0 14px 34px rgba(0,0,0,0.45)", textAlign: "left" },
+  metasCombinadasTooltipCompacto: { position: "absolute", left: "50%", transform: "translateX(-50%)", bottom: "38px", width: "min(280px, 76vw)", background: "#151b27", color: "#e5e7eb", padding: "12px 14px", borderRadius: "14px", fontSize: "0.78rem", fontWeight: 750, lineHeight: 1.35, border: "1px solid rgba(251,191,36,0.35)", boxShadow: "0 14px 34px rgba(0,0,0,0.45)", textAlign: "left" },
+  metasCombinadasTooltipTitulo: { color: "#fbbf24", fontWeight: 950, marginBottom: "5px" },
   progresoCaraACara: { display: "flex", alignItems: "baseline", gap: "6px", marginBottom: "16px" },
   progresoConsumido: { fontSize: "2.4rem", fontWeight: 900, lineHeight: 1 },
   progresoMetaDisplay: { color: "#8f96a4", fontSize: "1.25rem", fontWeight: 800 },
@@ -2529,9 +3428,11 @@ const styles = {
   confirmOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", padding: "18px", zIndex: 1300 },
   confirmCard: { width: "100%", maxWidth: "390px", background: "#0f131b", border: "1px solid #273043", borderRadius: "24px", padding: "20px 16px 16px", boxShadow: "0 22px 50px rgba(0,0,0,0.45)" },
   confirmTitulo: { textAlign: "center", color: "#b7bcc8", fontSize: "1.12rem", fontWeight: 900, marginBottom: "12px" },
+  confirmTituloPendiente: { textAlign: "center", color: "#ffffff", fontSize: "1.28rem", fontWeight: 950, letterSpacing: "0.4px", marginBottom: "12px", textShadow: "0 0 10px rgba(255,255,255,0.5), 0 0 22px rgba(105,183,255,0.25)", animation: "pulsePendingTitle 1.8s ease-in-out infinite" },
   confirmRegistroRow: { display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", marginBottom: "12px" },
   confirmRegistroIcono: { fontSize: "1rem" },
   confirmRegistroTexto: { color: "#b7bcc8", fontWeight: 800, fontSize: "0.95rem", letterSpacing: "0.3px" },
+  confirmRegistroTextoPendiente: { color: "#ffffff", fontWeight: 950, fontSize: "1.02rem", letterSpacing: "0.35px", textShadow: "0 0 8px rgba(255,255,255,0.25)" },
   confirmMensaje: { textAlign: "center", color: "#ffffff", fontSize: "0.98rem", fontWeight: 800, lineHeight: 1.3, marginBottom: "8px" },
   confirmDetalle: { textAlign: "center", color: "#98a0ae", fontSize: "0.84rem", lineHeight: 1.35, marginBottom: "14px" },
   confirmButtonsWrap: { display: "flex", gap: "10px" },
@@ -2542,9 +3443,10 @@ const styles = {
   
   listaPendientesWrap: { marginBottom: "14px" },
   pendienteLinea: { color: "#ffffff", fontSize: "0.92rem", textAlign: "left", marginBottom: "6px" },
-  previewPdfTopActions: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "14px", marginBottom: "14px" },
-  previewPdfBackBtn: { minHeight: "64px", borderRadius: "22px", border: "1px solid #465069", background: "#2a313f", color: "#ffffff", fontWeight: 900, fontSize: "1.02rem", cursor: "pointer", padding: "0 14px" },
-  previewPdfPrintBtn: { minHeight: "64px", borderRadius: "22px", border: "1px solid #4a5876", background: "#2a313f", color: "#ffffff", fontWeight: 900, fontSize: "1.02rem", cursor: "pointer", padding: "0 14px" },
+  previewPdfShell: { background: "transparent", border: "none", borderRadius: "0px", padding: "0px", marginBottom: "18px", boxShadow: "none", position: "relative" },
+  previewPdfTopActions: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "12px", marginBottom: "14px" },
+  previewPdfBackBtn: { minHeight: "58px", borderRadius: "22px", border: "1px solid #465069", background: "linear-gradient(180deg, #313949 0%, #202735 100%)", color: "#ffffff", fontWeight: 950, fontSize: "0.96rem", cursor: "pointer", padding: "0 12px", boxShadow: "0 10px 24px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.08)", letterSpacing: "0.1px" },
+  previewPdfPrintBtn: { minHeight: "58px", borderRadius: "22px", border: "1px solid #4a5876", background: "linear-gradient(180deg, #313949 0%, #202735 100%)", color: "#ffffff", fontWeight: 950, fontSize: "0.96rem", cursor: "pointer", padding: "0 12px", boxShadow: "0 10px 24px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.08)", letterSpacing: "0.1px" },
   previewPdfHelp: { color: "#c4cede", fontWeight: 800, fontSize: "0.95rem", textAlign: "center", lineHeight: 1.4, marginBottom: "14px" },
   previewPdfFrameWrap: { background: "transparent", border: "none", borderRadius: "0px", padding: "0px", overflow: "hidden", boxShadow: "none" },
   previewPdfFrame: { width: "100%", minHeight: "78vh", border: "none", borderRadius: "18px", background: "transparent", boxShadow: "none" },
@@ -2566,6 +3468,11 @@ if (typeof document !== "undefined") {
       @keyframes scaleFadeIn {
         0% { opacity: 0; transform: scale(0.95); }
         100% { opacity: 1; transform: scale(1); }
+      }
+      @keyframes pulsePendingTitle {
+        0% { opacity: 0.88; text-shadow: 0 0 6px rgba(255,255,255,0.28), 0 0 14px rgba(105,183,255,0.12); }
+        50% { opacity: 1; text-shadow: 0 0 14px rgba(255,255,255,0.72), 0 0 30px rgba(105,183,255,0.35); }
+        100% { opacity: 0.88; text-shadow: 0 0 6px rgba(255,255,255,0.28), 0 0 14px rgba(105,183,255,0.12); }
       }
     `;
     document.head.appendChild(style);

@@ -576,6 +576,9 @@ function App() {
     fibr: String(initialDayState.metasActuales.fibr), agua: String(initialDayState.metasActuales.agua),
   }));
   const [historialVista, setHistorialVista] = useState("menu");
+  const [fechaReporteDiarioKey, setFechaReporteDiarioKey] = useState(() => initialDayState.fechaKey);
+  const [selectorSemanaDiarioAbierto, setSelectorSemanaDiarioAbierto] = useState(false);
+  const [fechaSelectorDiario, setFechaSelectorDiario] = useState(() => initialDayState.fechaKey);
   const [modoPostGuardado, setModoPostGuardado] = useState(false);
   const [modoLectura, setModoLectura] = useState(false);
   const [pdfPreview, setPdfPreview] = useState(null);
@@ -596,6 +599,7 @@ function App() {
   const [resumenDiarioNotaHeight, setResumenDiarioNotaHeight] = useState(72);
   const [resumenDiarioParkingHeight, setResumenDiarioParkingHeight] = useState(0);
   const fechaBaseHoy = useMemo(() => parseDateFromKey(fechaHoyKey), [fechaHoyKey]);
+  const fechaBaseReporteDiario = useMemo(() => parseDateFromKey(fechaReporteDiarioKey), [fechaReporteDiarioKey]);
   const actual = useMemo(() => OPCIONES.find((o) => o.label === comida) || OPCIONES[0], [comida]);
   const opcionesDisponibles = useMemo(() => OPCIONES.filter((op) => {
     if (op.label === "Colación AM" || op.label === "Colación PM") return !registrosColaciones[op.label];
@@ -654,7 +658,7 @@ function App() {
       if (event.key === "Escape") {
         setAbierto(false); setEditorRegistroAbierto(false); setConfirmacionEdicion(null);
         setMenuDatosAbierto(false); setPromptColacionActiva(null); setModalFinalizar(null); setModalMetasAbierto(false);
-        setModalRegistroAguaAbierto(false);
+        setModalRegistroAguaAbierto(false); setSelectorSemanaDiarioAbierto(false);
       }
     }
     document.addEventListener("mousedown", handleClickOutside);
@@ -826,8 +830,12 @@ useEffect(() => {
   const historialConHoy = useMemo(() => upsertHistorySnapshot(historialDias, liveDaySnapshot), [historialDias, liveDaySnapshot]);
   const weekSnapshots = useMemo(() => getWeekSnapshotsForRange(historialConHoy, fechaBaseHoy), [historialConHoy, fechaBaseHoy]);
   const monthSnapshots = useMemo(() => getMonthSnapshotsForRange(historialConHoy, fechaBaseHoy), [historialConHoy, fechaBaseHoy]);
+  const dailyWeekSnapshots = useMemo(() => getWeekSnapshotsForRange(historialConHoy, fechaBaseReporteDiario), [historialConHoy, fechaBaseReporteDiario]);
   const rangoSemanaPreview = useMemo(() => formatRangoHistorialTexto(fechaBaseHoy), [fechaBaseHoy]);
-  const resumenDiarioSemanaCerrados = useMemo(() => weekSnapshots.filter((row) => row?.diaFinalizado).slice(0, 7), [weekSnapshots]);
+  const rangoSemanaDiarioPreview = useMemo(() => formatRangoHistorialTexto(fechaBaseReporteDiario), [fechaBaseReporteDiario]);
+  const resumenDiarioSemanaCerrados = useMemo(() => dailyWeekSnapshots.filter((row) => row?.diaFinalizado).slice(0, 7), [dailyWeekSnapshots]);
+  const reporteDiarioEsSemanaActual = useMemo(() => formatDateKey(getStartOfWeek(fechaBaseReporteDiario)) === formatDateKey(getStartOfWeek(new Date())), [fechaBaseReporteDiario]);
+  const puedeAvanzarReporteDiario = useMemo(() => getStartOfWeek(fechaBaseReporteDiario).getTime() < getStartOfWeek(new Date()).getTime(), [fechaBaseReporteDiario]);
   const resumenSemanalItems = useMemo(() => [
     { key: "kcal", icono: "🔥", label: "KCAL", unidad: "kcal", color: COLORES.kcal, actual: weekSnapshots.reduce((sum, item) => sum + item.totales.kcal, 0), meta: weekSnapshots.reduce((sum, item) => sum + item.metaEfectiva.kcal, 0) },
     { key: "prot", icono: "🥩", label: "PROT", unidad: "g", color: COLORES.prot, actual: weekSnapshots.reduce((sum, item) => sum + item.totales.prot, 0), meta: weekSnapshots.reduce((sum, item) => sum + item.metaEfectiva.prot, 0) },
@@ -890,7 +898,7 @@ useEffect(() => {
     const node = resumenDiarioRowsRef.current;
     if (!node) return;
     node.scrollTop = 0;
-  }, [vistaActual, historialVista, pdfPreview?.titulo, fechaHoyKey, resumenDiarioSemanaCerrados.length]);
+  }, [vistaActual, historialVista, pdfPreview?.titulo, fechaReporteDiarioKey, resumenDiarioSemanaCerrados.length]);
 
 
   function ejecutarRescate() {
@@ -939,6 +947,37 @@ useEffect(() => {
     setMensaje("✅ ¡Nuevo día iniciado!");
   }
   function goHome() { setVistaActual("sugerencia"); setHistorialVista("menu"); setPdfPreview(null); setMenuDatosAbierto(false); setAbierto(false); if (diaFinalizado || modoPostGuardado) { setModoPostGuardado(true); setModoLectura(false); } }
+
+  function moverReporteDiarioSemanas(delta) {
+    setFechaReporteDiarioKey((prev) => {
+      const base = parseDateFromKey(prev);
+      base.setDate(base.getDate() + delta * 7);
+      return formatDateKey(base);
+    });
+    setPdfPreview(null);
+  }
+
+  function irReporteDiarioSemanaActual() {
+    setFechaReporteDiarioKey(formatDateKey(new Date()));
+    setFechaSelectorDiario(formatDateKey(new Date()));
+    setPdfPreview(null);
+  }
+
+  function abrirSelectorSemanaDiario() {
+    setFechaSelectorDiario(fechaReporteDiarioKey);
+    setSelectorSemanaDiarioAbierto(true);
+  }
+
+  function aplicarSelectorSemanaDiario() {
+    const fechaElegida = parseDateFromKey(fechaSelectorDiario);
+    if (Number.isNaN(fechaElegida.getTime())) {
+      setMensaje("❌ Selecciona una fecha válida");
+      return;
+    }
+    setFechaReporteDiarioKey(formatDateKey(fechaElegida));
+    setSelectorSemanaDiarioAbierto(false);
+    setPdfPreview(null);
+  }
 
   function getBackupLocalStorageKeys() {
     if (typeof window === "undefined") return [];
@@ -1303,7 +1342,8 @@ useEffect(() => {
   }
 
   function buildPdfHtml({ tituloExportacion, contenido }) {
-    const periodoLabel = getPeriodoPdfLabel(tituloExportacion, fechaBaseHoy);
+    const fechaPeriodoPdf = tituloExportacion === "Resumen Diario" ? fechaBaseReporteDiario : fechaBaseHoy;
+    const periodoLabel = tituloExportacion === "Resumen Diario" ? formatRangoHistorialTexto(fechaPeriodoPdf) : getPeriodoPdfLabel(tituloExportacion, fechaPeriodoPdf);
     const nombreEncabezado = escapeHtml(nombreUsuario || "Usuario");
     const tituloSeguro = escapeHtml(tituloExportacion || "Resumen");
     const periodoSeguro = escapeHtml(periodoLabel || "");
@@ -1314,7 +1354,7 @@ useEffect(() => {
       ? `<div class="pdf-warning">⚠️ 🔀 Metas combinadas en la semana</div>`
       : esMensual && monthSnapshots.some((item) => item?.hayCambioMetas)
         ? `<div class="pdf-warning">⚠️ 🔀 Metas combinadas en el mes</div>`
-        : esDiario && weekSnapshots.some((item) => item?.hayCambioMetas)
+        : esDiario && dailyWeekSnapshots.some((item) => item?.hayCambioMetas)
           ? `<div class="pdf-warning">⚠️ 🔀 Metas combinadas en el período mostrado</div>`
           : "";
     const notaTexto = esDiario
@@ -1451,7 +1491,8 @@ th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
       setMensaje("⏳ Generando PDF...");
 
       const blob = await generarBlobPdfDesdePreview();
-      const nombreArchivo = buildPdfFileName(pdfPreview?.titulo || "reporte", fechaBaseHoy);
+      const fechaArchivoPdf = pdfPreview?.fechaKey ? parseDateFromKey(pdfPreview.fechaKey) : fechaBaseHoy;
+      const nombreArchivo = buildPdfFileName(pdfPreview?.titulo || "reporte", fechaArchivoPdf);
       const tituloShare = pdfPreview?.titulo || "Reporte nutricional";
       const textoShare = `${tituloShare} · ${nombreUsuario || "Usuario"}`;
 
@@ -1562,7 +1603,7 @@ th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
     const buildDailyCell = (actual, meta, unidad) => `<div class="daily-cell"><div class="daily-actual">${Math.round(actual || 0)}${escapeHtml(unidad)}</div><div class="daily-meta">${Math.round(meta || 0)}${escapeHtml(unidad)}</div></div>`;
 
     const buildDailyBlocks = () => {
-      const diasCerradosSemana = weekSnapshots.filter((row) => row?.diaFinalizado).slice(0, 7);
+      const diasCerradosSemana = dailyWeekSnapshots.filter((row) => row?.diaFinalizado).slice(0, 7);
       if (!diasCerradosSemana.length) {
         return `<div class="daily-empty">Aún no hay días cerrados en esta semana.</div>`;
       }
@@ -1580,7 +1621,7 @@ th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
     else if (tipo === "semanal") { tituloExportacion = "Resumen Semanal"; contenido = `${buildMetricCards(resumenSemanalItems, "semanal")}`; }
     else if (tipo === "mensual") { tituloExportacion = "Resumen Mensual"; contenido = `${buildMetricCards(resumenMensualItems, "mensual")}`; }
     const htmlDoc = buildPdfHtml({ tituloExportacion, contenido });
-    setPdfPreview({ html: htmlDoc, titulo: tituloExportacion });
+    setPdfPreview({ html: htmlDoc, titulo: tituloExportacion, fechaKey: tipo === "diario" ? fechaReporteDiarioKey : fechaHoyKey });
     setVistaActual("pdf");
     setMenuDatosAbierto(false);
     if (abrirPreview) setHistorialVista("preview");
@@ -2164,14 +2205,97 @@ th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
             <div style={{ textAlign: "center", marginTop: "0px", marginBottom: "10px" }}>
               <div
                 style={{
-                  color: "#8f96a4",
-                  fontWeight: 900,
-                  fontSize: previewEsMovil ? "0.9rem" : "0.98rem",
-                  lineHeight: 1.18,
+                  display: "grid",
+                  gridTemplateColumns: "42px minmax(0, 1fr) 42px",
+                  alignItems: "center",
+                  gap: previewEsMovil ? "6px" : "8px",
+                  width: "100%",
+                  maxWidth: "430px",
+                  margin: "0 auto",
                 }}
               >
-                {rangoSemanaPreview}
+                <button
+                  type="button"
+                  aria-label="Semana anterior"
+                  title="Semana anterior"
+                  style={{
+                    border: "1px solid rgba(148,163,184,0.28)",
+                    background: "rgba(15,23,42,0.72)",
+                    color: "#ffffff",
+                    borderRadius: "14px",
+                    minHeight: "38px",
+                    fontSize: "1.08rem",
+                    fontWeight: 900,
+                    cursor: "pointer",
+                  }}
+                  onClick={() => moverReporteDiarioSemanas(-1)}
+                >
+                  ◀️
+                </button>
+
+                <button
+                  type="button"
+                  aria-label="Elegir semana"
+                  title="Elegir semana"
+                  style={{
+                    border: "1px solid rgba(148,163,184,0.22)",
+                    background: "rgba(15,23,42,0.46)",
+                    color: "#e5e7eb",
+                    borderRadius: "16px",
+                    padding: previewEsMovil ? "8px 6px" : "9px 8px",
+                    minHeight: "38px",
+                    fontWeight: 900,
+                    fontSize: previewEsMovil ? "0.78rem" : "0.9rem",
+                    lineHeight: 1.16,
+                    cursor: "pointer",
+                    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                  }}
+                  onClick={abrirSelectorSemanaDiario}
+                >
+                  📅 {rangoSemanaDiarioPreview}
+                </button>
+
+                <button
+                  type="button"
+                  aria-label="Semana siguiente"
+                  title="Semana siguiente"
+                  disabled={!puedeAvanzarReporteDiario}
+                  style={{
+                    border: "1px solid rgba(148,163,184,0.28)",
+                    background: puedeAvanzarReporteDiario ? "rgba(15,23,42,0.72)" : "rgba(15,23,42,0.26)",
+                    color: puedeAvanzarReporteDiario ? "#ffffff" : "#6b7280",
+                    borderRadius: "14px",
+                    minHeight: "38px",
+                    fontSize: "1.08rem",
+                    fontWeight: 900,
+                    cursor: puedeAvanzarReporteDiario ? "pointer" : "not-allowed",
+                    opacity: puedeAvanzarReporteDiario ? 1 : 0.58,
+                  }}
+                  onClick={() => {
+                    if (puedeAvanzarReporteDiario) moverReporteDiarioSemanas(1);
+                  }}
+                >
+                  ▶️
+                </button>
               </div>
+
+              <button
+                type="button"
+                style={{
+                  marginTop: "8px",
+                  border: reporteDiarioEsSemanaActual ? "1px solid rgba(79, 209, 197, 0.35)" : "1px solid rgba(148,163,184,0.28)",
+                  background: reporteDiarioEsSemanaActual ? "rgba(45,212,191,0.10)" : "rgba(15,23,42,0.54)",
+                  color: reporteDiarioEsSemanaActual ? "#7dd3fc" : "#cbd5e1",
+                  borderRadius: "999px",
+                  padding: "7px 14px",
+                  fontSize: previewEsMovil ? "0.72rem" : "0.78rem",
+                  fontWeight: 900,
+                  cursor: "pointer",
+                }}
+                onClick={irReporteDiarioSemanaActual}
+              >
+                📍 Semana actual
+              </button>
             </div>
 
             <div
@@ -2831,6 +2955,16 @@ th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
         
         {modalFinalizar ? <FinalizarDiaModal modalFinalizar={modalFinalizar} onCerrar={cerrarFinalizarDia} onConfirmar={confirmarFinalizarDia} /> : null}
         {modalMetasAbierto ? <ModalMetasDia camposMetas={camposMetas} onChange={handleCampoMetaChange} onConfirmar={confirmarCambioMetas} onCerrar={cerrarModalMetas} /> : null}
+        {selectorSemanaDiarioAbierto ? (
+          <ModalSelectorSemanaReporte
+            fechaValor={fechaSelectorDiario}
+            fechaMaxima={formatDateKey(new Date())}
+            rangoPreview={formatRangoHistorialTexto(parseDateFromKey(fechaSelectorDiario))}
+            onChange={setFechaSelectorDiario}
+            onConfirmar={aplicarSelectorSemanaDiario}
+            onCerrar={() => setSelectorSemanaDiarioAbierto(false)}
+          />
+        ) : null}
         {modalRescateAbierto ? <ModalRescateDia fechaKey={fechaHoyKey} onGuardar={ejecutarRescate} onDescartar={descartarRescate} /> : null}
       </div>
     </div>
@@ -2841,6 +2975,54 @@ th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
 // ============================================================================
 // 🧩 BLOQUE 5: COMPONENTES SECUNDARIOS Y MODALES
 // ============================================================================
+
+function ModalSelectorSemanaReporte({ fechaValor, fechaMaxima, rangoPreview, onChange, onConfirmar, onCerrar }) {
+  return (
+    <div style={styles.modalOverlay}>
+      <div style={{ ...styles.modalCard, maxWidth: "390px" }}>
+        <div style={styles.modalTituloWrap}>
+          <div style={styles.modalTituloPrincipal}>ELEGIR SEMANA</div>
+          <div style={styles.modalTituloSecundario}>
+            <span style={styles.modalTituloIcono}>📅</span>
+            <span style={styles.modalTituloTexto}>RESUMEN DIARIO</span>
+          </div>
+        </div>
+
+        <div style={{ color: "#a5b4cc", fontSize: "0.86rem", lineHeight: 1.35, textAlign: "center", marginBottom: "14px", fontWeight: 700 }}>
+          Selecciona cualquier día. La app mostrará la semana completa donde cae esa fecha.
+        </div>
+
+        <input
+          type="date"
+          value={fechaValor}
+          max={fechaMaxima}
+          onChange={(event) => onChange(event.target.value)}
+          style={{
+            width: "100%",
+            border: "1px solid rgba(148,163,184,0.28)",
+            borderRadius: "16px",
+            background: "#0b1224",
+            color: "#ffffff",
+            padding: "14px 14px",
+            fontSize: "1rem",
+            fontWeight: 900,
+            outline: "none",
+            boxSizing: "border-box",
+          }}
+        />
+
+        <div style={{ marginTop: "12px", textAlign: "center", color: "#e5e7eb", fontSize: "0.82rem", fontWeight: 900 }}>
+          📅 {rangoPreview}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginTop: "18px" }}>
+          <button type="button" style={styles.confirmSecondaryBtnSolo} onClick={onCerrar}>Cancelar</button>
+          <button type="button" style={{ ...styles.confirmPrimaryBtn, background: "#2452b0" }} onClick={onConfirmar}>Ver semana</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // 🔥 NUEVO: Componente exclusivo para la ventana flotante de Agua
 function ModalRegistroAgua({ valor, onChange, onGuardar, onCancelar }) {

@@ -586,7 +586,6 @@ function App() {
   const [homeActualizadaActiva, setHomeActualizadaActiva] = useState(false);
 
   const selectorRef = useRef(null);
-  const selectorSemanaDiarioInputRef = useRef(null);
   const previewFrameRef = useRef(null);
   const backupFileInputRef = useRef(null);
   const menuDatosRef = useRef(null);
@@ -967,48 +966,40 @@ useEffect(() => {
   function abrirSelectorSemanaDiario() {
     const fechaBase = fechaReporteDiarioKey || formatDateKey(new Date());
     setFechaSelectorDiario(fechaBase);
-    setSelectorSemanaDiarioAbierto(false);
-
-    const input = selectorSemanaDiarioInputRef.current;
-    if (!input) {
-      setMensaje("📅 No pude abrir el calendario. Intenta otra vez.");
-      return;
-    }
-
-    try {
-      input.value = fechaBase;
-      input.focus({ preventScroll: true });
-      if (typeof input.showPicker === "function") {
-        input.showPicker();
-      } else {
-        input.click();
-      }
-    } catch (error) {
-      try {
-        input.click();
-      } catch {
-        setMensaje("📅 No pude abrir el calendario. Intenta otra vez.");
-      }
-    }
+    setSelectorSemanaDiarioAbierto(true);
   }
 
   function aplicarFechaSelectorSemanaDiario(fechaElegidaKey) {
-    if (!fechaElegidaKey) {
-      // Android/Chrome puede devolver vacío al tocar "Borrar".
-      // En ese caso salimos sin cambiar la semana seleccionada.
-      setFechaSelectorDiario(fechaReporteDiarioKey);
-      return;
-    }
+    if (!fechaElegidaKey) return;
     const fechaElegida = parseDateFromKey(fechaElegidaKey);
+    if (Number.isNaN(fechaElegida.getTime())) return;
+    const hoy = getStartOfDay(new Date());
+    if (getStartOfDay(fechaElegida).getTime() > hoy.getTime()) return;
+    setFechaSelectorDiario(formatDateKey(fechaElegida));
+  }
+
+  function confirmarSelectorSemanaDiario() {
+    const fechaElegida = parseDateFromKey(fechaSelectorDiario || fechaReporteDiarioKey || formatDateKey(new Date()));
     if (Number.isNaN(fechaElegida.getTime())) {
-      setFechaSelectorDiario(fechaReporteDiarioKey);
+      setSelectorSemanaDiarioAbierto(false);
       return;
     }
-    const nuevaFechaKey = formatDateKey(fechaElegida);
+    const hoy = getStartOfDay(new Date());
+    const fechaFinal = getStartOfDay(fechaElegida).getTime() > hoy.getTime() ? hoy : fechaElegida;
+    const nuevaFechaKey = formatDateKey(fechaFinal);
     setFechaSelectorDiario(nuevaFechaKey);
     setFechaReporteDiarioKey(nuevaFechaKey);
     setSelectorSemanaDiarioAbierto(false);
     setPdfPreview(null);
+  }
+
+  function seleccionarSemanaActualEnCalendarioDiario() {
+    setFechaSelectorDiario(formatDateKey(new Date()));
+  }
+
+  function cancelarSelectorSemanaDiario() {
+    setFechaSelectorDiario(fechaReporteDiarioKey || formatDateKey(new Date()));
+    setSelectorSemanaDiarioAbierto(false);
   }
 
   function getBackupLocalStorageKeys() {
@@ -2987,27 +2978,16 @@ th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
         
         {modalFinalizar ? <FinalizarDiaModal modalFinalizar={modalFinalizar} onCerrar={cerrarFinalizarDia} onConfirmar={confirmarFinalizarDia} /> : null}
         {modalMetasAbierto ? <ModalMetasDia camposMetas={camposMetas} onChange={handleCampoMetaChange} onConfirmar={confirmarCambioMetas} onCerrar={cerrarModalMetas} /> : null}
-        <input
-          ref={selectorSemanaDiarioInputRef}
-          type="date"
-          value={fechaSelectorDiario}
-          max={formatDateKey(new Date())}
-          onChange={(event) => aplicarFechaSelectorSemanaDiario(event.target.value)}
-          style={{
-            position: "fixed",
-            left: "0px",
-            bottom: "0px",
-            width: "1px",
-            height: "1px",
-            opacity: 0,
-            pointerEvents: "none",
-            border: 0,
-            padding: 0,
-            zIndex: -1,
-          }}
-          aria-hidden="true"
-          tabIndex={-1}
-        />
+        {selectorSemanaDiarioAbierto ? (
+          <ModalCalendarioSemanaReporte
+            fechaValor={fechaSelectorDiario}
+            fechaMaxima={formatDateKey(new Date())}
+            onChange={aplicarFechaSelectorSemanaDiario}
+            onConfirmar={confirmarSelectorSemanaDiario}
+            onCerrar={cancelarSelectorSemanaDiario}
+            onSemanaActual={seleccionarSemanaActualEnCalendarioDiario}
+          />
+        ) : null}
         {modalRescateAbierto ? <ModalRescateDia fechaKey={fechaHoyKey} onGuardar={ejecutarRescate} onDescartar={descartarRescate} /> : null}
       </div>
     </div>
@@ -3019,88 +2999,187 @@ th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
 // 🧩 BLOQUE 5: COMPONENTES SECUNDARIOS Y MODALES
 // ============================================================================
 
-function ModalSelectorSemanaReporte({ fechaValor, fechaMaxima, rangoPreview, onChange, onConfirmar, onCerrar }) {
-  const inputFechaRef = useRef(null);
+function ModalCalendarioSemanaReporte({ fechaValor, fechaMaxima, onChange, onConfirmar, onCerrar, onSemanaActual }) {
+  const fechaSeleccionada = useMemo(() => {
+    const parsed = parseDateFromKey(fechaValor || formatDateKey(new Date()));
+    return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  }, [fechaValor]);
 
-  const abrirCalendarioNativo = () => {
-    const input = inputFechaRef.current;
-    if (!input) return;
-    try {
-      input.focus({ preventScroll: true });
-      if (typeof input.showPicker === "function") {
-        input.showPicker();
-      }
-    } catch (error) {
-      try { input.click(); } catch { /* sin acción: el botón visible queda como respaldo */ }
-    }
-  };
+  const fechaMaximaDate = useMemo(() => {
+    const parsed = parseDateFromKey(fechaMaxima || formatDateKey(new Date()));
+    return getStartOfDay(Number.isNaN(parsed.getTime()) ? new Date() : parsed);
+  }, [fechaMaxima]);
+
+  const [mesVisible, setMesVisible] = useState(() => new Date(fechaSeleccionada.getFullYear(), fechaSeleccionada.getMonth(), 1));
 
   useEffect(() => {
-    const timer = setTimeout(abrirCalendarioNativo, 80);
-    return () => clearTimeout(timer);
-  }, []);
+    setMesVisible(new Date(fechaSeleccionada.getFullYear(), fechaSeleccionada.getMonth(), 1));
+  }, [fechaSeleccionada]);
+
+  const diasSemana = ["L", "M", "M", "J", "V", "S", "D"];
+  const monthLabel = mesVisible.toLocaleDateString("es-ES", { month: "long", year: "numeric" });
+  const monthLabelFinal = monthLabel.charAt(0).toUpperCase() + monthLabel.slice(1);
+  const selectedKey = formatDateKey(fechaSeleccionada);
+  const selectedWeekKey = formatDateKey(getStartOfWeek(fechaSeleccionada));
+  const rangoSeleccionado = formatRangoHistorialTexto(fechaSeleccionada);
+
+  const maxMonth = new Date(fechaMaximaDate.getFullYear(), fechaMaximaDate.getMonth(), 1);
+  const puedeAvanzarMes = mesVisible.getTime() < maxMonth.getTime();
+
+  const moverMes = (delta) => {
+    setMesVisible((prev) => {
+      const next = new Date(prev.getFullYear(), prev.getMonth() + delta, 1);
+      if (next.getTime() > maxMonth.getTime()) return prev;
+      return next;
+    });
+  };
+
+  const irAHoyVisual = () => {
+    const hoyKey = formatDateKey(new Date());
+    onSemanaActual?.();
+    const hoyDate = parseDateFromKey(hoyKey);
+    setMesVisible(new Date(hoyDate.getFullYear(), hoyDate.getMonth(), 1));
+  };
+
+  const firstOfMonth = new Date(mesVisible.getFullYear(), mesVisible.getMonth(), 1);
+  const offsetMonday = firstOfMonth.getDay() === 0 ? 6 : firstOfMonth.getDay() - 1;
+  const startGrid = new Date(firstOfMonth);
+  startGrid.setDate(firstOfMonth.getDate() - offsetMonday);
+  const cells = Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(startGrid);
+    date.setDate(startGrid.getDate() + index);
+    return date;
+  });
 
   return (
     <div style={styles.modalOverlay}>
-      <div style={{ ...styles.modalCard, maxWidth: "390px" }}>
-        <div style={styles.modalTituloWrap}>
-          <div style={styles.modalTituloPrincipal}>ELEGIR SEMANA</div>
-          <div style={styles.modalTituloSecundario}>
-            <span style={styles.modalTituloIcono}>📅</span>
-            <span style={styles.modalTituloTexto}>RESUMEN DIARIO</span>
+      <div
+        style={{
+          width: "min(92vw, 392px)",
+          background: "linear-gradient(180deg, rgba(22,29,44,0.98) 0%, rgba(5,9,18,0.98) 100%)",
+          border: "1px solid rgba(148,163,184,0.28)",
+          borderRadius: "28px",
+          padding: "20px 16px 16px",
+          boxShadow: "0 32px 70px rgba(0,0,0,0.62), inset 0 1px 0 rgba(255,255,255,0.06)",
+          animation: "scaleFadeIn 0.18s ease-out",
+        }}
+      >
+        <div style={{ textAlign: "center", marginBottom: "14px" }}>
+          <div style={{ color: "#ffffff", fontWeight: 950, fontSize: "1.24rem", letterSpacing: "0.02em" }}>ELEGIR SEMANA</div>
+          <div style={{ color: "#b8c2d6", fontWeight: 900, fontSize: "0.9rem", marginTop: "6px" }}>📅 RESUMEN DIARIO</div>
+          <div style={{ color: "#91a0ba", fontWeight: 750, fontSize: "0.78rem", lineHeight: 1.35, marginTop: "10px" }}>
+            Toca cualquier día para resaltar su semana completa.
           </div>
         </div>
 
-        <div style={{ color: "#a5b4cc", fontSize: "0.86rem", lineHeight: 1.35, textAlign: "center", marginBottom: "14px", fontWeight: 700 }}>
-          Selecciona cualquier día. La app mostrará la semana completa donde cae esa fecha.
+        <div style={{ display: "grid", gridTemplateColumns: "44px minmax(0, 1fr) 44px", alignItems: "center", gap: "10px", marginBottom: "12px" }}>
+          <button
+            type="button"
+            onClick={() => moverMes(-1)}
+            style={{
+              height: "42px",
+              borderRadius: "14px",
+              border: "1px solid rgba(148,163,184,0.25)",
+              background: "rgba(15,23,42,0.72)",
+              color: "#ffffff",
+              fontSize: "1.22rem",
+              fontWeight: 950,
+              cursor: "pointer",
+            }}
+            aria-label="Mes anterior"
+          >
+            ‹
+          </button>
+          <div style={{ textAlign: "center", color: "#ffffff", fontSize: "1.05rem", fontWeight: 950, lineHeight: 1.1 }}>{monthLabelFinal}</div>
+          <button
+            type="button"
+            onClick={() => moverMes(1)}
+            disabled={!puedeAvanzarMes}
+            style={{
+              height: "42px",
+              borderRadius: "14px",
+              border: "1px solid rgba(148,163,184,0.25)",
+              background: puedeAvanzarMes ? "rgba(15,23,42,0.72)" : "rgba(15,23,42,0.28)",
+              color: puedeAvanzarMes ? "#ffffff" : "#64748b",
+              fontSize: "1.22rem",
+              fontWeight: 950,
+              cursor: puedeAvanzarMes ? "pointer" : "not-allowed",
+            }}
+            aria-label="Mes siguiente"
+          >
+            ›
+          </button>
         </div>
 
-        <input
-          ref={inputFechaRef}
-          type="date"
-          value={fechaValor}
-          max={fechaMaxima}
-          onChange={(event) => onChange(event.target.value)}
-          style={{
-            position: "absolute",
-            width: "1px",
-            height: "1px",
-            opacity: 0,
-            pointerEvents: "none",
-            border: 0,
-            padding: 0,
-          }}
-          aria-hidden="true"
-          tabIndex={-1}
-        />
-
-        <button
-          type="button"
-          onClick={abrirCalendarioNativo}
-          style={{
-            width: "100%",
-            border: "1px solid rgba(148,163,184,0.28)",
-            borderRadius: "16px",
-            background: "#0b1224",
-            color: "#ffffff",
-            padding: "14px 14px",
-            fontSize: "0.98rem",
-            fontWeight: 900,
-            outline: "none",
-            boxSizing: "border-box",
-            cursor: "pointer",
-          }}
-        >
-          📅 Abrir calendario
-        </button>
-
-        <div style={{ marginTop: "12px", textAlign: "center", color: "#e5e7eb", fontSize: "0.82rem", fontWeight: 900 }}>
-          📅 {rangoPreview}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "4px", marginBottom: "6px" }}>
+          {diasSemana.map((dia, index) => (
+            <div key={dia + index} style={{ textAlign: "center", color: "#98a2b3", fontWeight: 950, fontSize: "0.76rem", padding: "6px 0" }}>{dia}</div>
+          ))}
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginTop: "18px" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "4px", marginBottom: "12px" }}>
+          {cells.map((date) => {
+            const key = formatDateKey(date);
+            const sameMonth = date.getMonth() === mesVisible.getMonth();
+            const disabled = getStartOfDay(date).getTime() > fechaMaximaDate.getTime();
+            const selected = key === selectedKey;
+            const inWeek = formatDateKey(getStartOfWeek(date)) === selectedWeekKey;
+            return (
+              <button
+                key={key}
+                type="button"
+                disabled={disabled}
+                onClick={() => onChange(key)}
+                style={{
+                  height: "36px",
+                  borderRadius: selected ? "999px" : inWeek ? "14px" : "12px",
+                  border: selected ? "1px solid rgba(147,197,253,0.95)" : "1px solid transparent",
+                  background: selected
+                    ? "linear-gradient(180deg, #5b8cff 0%, #2f68d8 100%)"
+                    : inWeek
+                      ? "rgba(96,165,250,0.18)"
+                      : "transparent",
+                  color: disabled ? "#4b5563" : sameMonth ? "#f8fafc" : "#64748b",
+                  fontSize: "0.94rem",
+                  fontWeight: selected || inWeek ? 950 : 850,
+                  cursor: disabled ? "not-allowed" : "pointer",
+                  opacity: disabled ? 0.45 : sameMonth ? 1 : 0.62,
+                  boxShadow: selected ? "0 0 18px rgba(59,130,246,0.38)" : "none",
+                }}
+                aria-label={date.toLocaleDateString("es-ES")}
+              >
+                {date.getDate()}
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={{ textAlign: "center", marginBottom: "12px" }}>
+          <button
+            type="button"
+            onClick={irAHoyVisual}
+            style={{
+              border: "1px solid rgba(45,212,191,0.32)",
+              borderRadius: "999px",
+              background: "rgba(45,212,191,0.10)",
+              color: "#7dd3fc",
+              padding: "7px 13px",
+              fontSize: "0.76rem",
+              fontWeight: 950,
+              cursor: "pointer",
+            }}
+          >
+            📍 Semana actual
+          </button>
+        </div>
+
+        <div style={{ color: "#e5e7eb", fontSize: "0.82rem", fontWeight: 950, textAlign: "center", marginBottom: "14px" }}>
+          📅 {rangoSeleccionado}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
           <button type="button" style={styles.confirmSecondaryBtnSolo} onClick={onCerrar}>Cancelar</button>
-          <button type="button" style={{ ...styles.confirmPrimaryBtn, background: "#2452b0" }} onClick={onConfirmar}>Ver semana</button>
+          <button type="button" style={{ ...styles.confirmPrimaryBtn, background: "#2563eb" }} onClick={onConfirmar}>Ir a la semana</button>
         </div>
       </div>
     </div>

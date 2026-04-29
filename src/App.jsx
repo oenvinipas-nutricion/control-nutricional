@@ -3065,8 +3065,12 @@ function ModalCalendarioSemanaReporte({ fechaValor, fechaMaxima, onChange, onCon
         }}
       >
         <div style={{ textAlign: "center", marginBottom: "14px" }}>
-          <div style={{ color: "#ffffff", fontWeight: 950, fontSize: "1.24rem", letterSpacing: "0.02em" }}>ELEGIR SEMANA</div>
-          <div style={{ color: "#b8c2d6", fontWeight: 900, fontSize: "0.9rem", marginTop: "6px" }}>📅 RESUMEN DIARIO</div>
+          <div style={{ color: "#ffffff", fontWeight: 950, fontSize: "1.32rem", letterSpacing: "0.01em", lineHeight: 1.08 }}>
+            Resumen Diario
+          </div>
+          <div style={{ color: "#dbe5f7", fontWeight: 950, fontSize: "0.98rem", letterSpacing: "0.04em", marginTop: "7px", textTransform: "uppercase" }}>
+            Elegir semana
+          </div>
           <div style={{ color: "#91a0ba", fontWeight: 750, fontSize: "0.78rem", lineHeight: 1.35, marginTop: "10px" }}>
             Toca cualquier día para resaltar su semana completa.
           </div>
@@ -3154,28 +3158,7 @@ function ModalCalendarioSemanaReporte({ fechaValor, fechaMaxima, onChange, onCon
           })}
         </div>
 
-        <div style={{ textAlign: "center", marginBottom: "12px" }}>
-          <button
-            type="button"
-            onClick={irAHoyVisual}
-            style={{
-              border: "1px solid rgba(45,212,191,0.32)",
-              borderRadius: "999px",
-              background: "rgba(45,212,191,0.10)",
-              color: "#7dd3fc",
-              padding: "7px 13px",
-              fontSize: "0.76rem",
-              fontWeight: 950,
-              cursor: "pointer",
-            }}
-          >
-            📍 Semana actual
-          </button>
-        </div>
-
-        <div style={{ color: "#e5e7eb", fontSize: "0.82rem", fontWeight: 950, textAlign: "center", marginBottom: "14px" }}>
-          📅 {rangoSeleccionado}
-        </div>
+        <div style={{ height: "2px", marginBottom: "14px" }} />
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
           <button type="button" style={styles.confirmSecondaryBtnSolo} onClick={onCerrar}>Cancelar</button>

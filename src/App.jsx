@@ -2977,6 +2977,26 @@ th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
 // ============================================================================
 
 function ModalSelectorSemanaReporte({ fechaValor, fechaMaxima, rangoPreview, onChange, onConfirmar, onCerrar }) {
+  const inputFechaRef = useRef(null);
+
+  const abrirCalendarioNativo = () => {
+    const input = inputFechaRef.current;
+    if (!input) return;
+    try {
+      input.focus({ preventScroll: true });
+      if (typeof input.showPicker === "function") {
+        input.showPicker();
+      }
+    } catch (error) {
+      try { input.click(); } catch { /* sin acción: el botón visible queda como respaldo */ }
+    }
+  };
+
+  useEffect(() => {
+    const timer = setTimeout(abrirCalendarioNativo, 80);
+    return () => clearTimeout(timer);
+  }, []);
+
   return (
     <div style={styles.modalOverlay}>
       <div style={{ ...styles.modalCard, maxWidth: "390px" }}>
@@ -2993,10 +3013,27 @@ function ModalSelectorSemanaReporte({ fechaValor, fechaMaxima, rangoPreview, onC
         </div>
 
         <input
+          ref={inputFechaRef}
           type="date"
           value={fechaValor}
           max={fechaMaxima}
           onChange={(event) => onChange(event.target.value)}
+          style={{
+            position: "absolute",
+            width: "1px",
+            height: "1px",
+            opacity: 0,
+            pointerEvents: "none",
+            border: 0,
+            padding: 0,
+          }}
+          aria-hidden="true"
+          tabIndex={-1}
+        />
+
+        <button
+          type="button"
+          onClick={abrirCalendarioNativo}
           style={{
             width: "100%",
             border: "1px solid rgba(148,163,184,0.28)",
@@ -3004,12 +3041,15 @@ function ModalSelectorSemanaReporte({ fechaValor, fechaMaxima, rangoPreview, onC
             background: "#0b1224",
             color: "#ffffff",
             padding: "14px 14px",
-            fontSize: "1rem",
+            fontSize: "0.98rem",
             fontWeight: 900,
             outline: "none",
             boxSizing: "border-box",
+            cursor: "pointer",
           }}
-        />
+        >
+          📅 Abrir calendario
+        </button>
 
         <div style={{ marginTop: "12px", textAlign: "center", color: "#e5e7eb", fontSize: "0.82rem", fontWeight: 900 }}>
           📅 {rangoPreview}

@@ -586,6 +586,7 @@ function App() {
   const [homeActualizadaActiva, setHomeActualizadaActiva] = useState(false);
 
   const selectorRef = useRef(null);
+  const selectorSemanaDiarioInputRef = useRef(null);
   const previewFrameRef = useRef(null);
   const backupFileInputRef = useRef(null);
   const menuDatosRef = useRef(null);
@@ -964,17 +965,48 @@ useEffect(() => {
   }
 
   function abrirSelectorSemanaDiario() {
-    setFechaSelectorDiario(fechaReporteDiarioKey);
-    setSelectorSemanaDiarioAbierto(true);
-  }
+    const fechaBase = fechaReporteDiarioKey || formatDateKey(new Date());
+    setFechaSelectorDiario(fechaBase);
+    setSelectorSemanaDiarioAbierto(false);
 
-  function aplicarSelectorSemanaDiario() {
-    const fechaElegida = parseDateFromKey(fechaSelectorDiario);
-    if (Number.isNaN(fechaElegida.getTime())) {
-      setMensaje("❌ Selecciona una fecha válida");
+    const input = selectorSemanaDiarioInputRef.current;
+    if (!input) {
+      setMensaje("📅 No pude abrir el calendario. Intenta otra vez.");
       return;
     }
-    setFechaReporteDiarioKey(formatDateKey(fechaElegida));
+
+    try {
+      input.value = fechaBase;
+      input.focus({ preventScroll: true });
+      if (typeof input.showPicker === "function") {
+        input.showPicker();
+      } else {
+        input.click();
+      }
+    } catch (error) {
+      try {
+        input.click();
+      } catch {
+        setMensaje("📅 No pude abrir el calendario. Intenta otra vez.");
+      }
+    }
+  }
+
+  function aplicarFechaSelectorSemanaDiario(fechaElegidaKey) {
+    if (!fechaElegidaKey) {
+      // Android/Chrome puede devolver vacío al tocar "Borrar".
+      // En ese caso salimos sin cambiar la semana seleccionada.
+      setFechaSelectorDiario(fechaReporteDiarioKey);
+      return;
+    }
+    const fechaElegida = parseDateFromKey(fechaElegidaKey);
+    if (Number.isNaN(fechaElegida.getTime())) {
+      setFechaSelectorDiario(fechaReporteDiarioKey);
+      return;
+    }
+    const nuevaFechaKey = formatDateKey(fechaElegida);
+    setFechaSelectorDiario(nuevaFechaKey);
+    setFechaReporteDiarioKey(nuevaFechaKey);
     setSelectorSemanaDiarioAbierto(false);
     setPdfPreview(null);
   }
@@ -2955,16 +2987,27 @@ th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
         
         {modalFinalizar ? <FinalizarDiaModal modalFinalizar={modalFinalizar} onCerrar={cerrarFinalizarDia} onConfirmar={confirmarFinalizarDia} /> : null}
         {modalMetasAbierto ? <ModalMetasDia camposMetas={camposMetas} onChange={handleCampoMetaChange} onConfirmar={confirmarCambioMetas} onCerrar={cerrarModalMetas} /> : null}
-        {selectorSemanaDiarioAbierto ? (
-          <ModalSelectorSemanaReporte
-            fechaValor={fechaSelectorDiario}
-            fechaMaxima={formatDateKey(new Date())}
-            rangoPreview={formatRangoHistorialTexto(parseDateFromKey(fechaSelectorDiario))}
-            onChange={setFechaSelectorDiario}
-            onConfirmar={aplicarSelectorSemanaDiario}
-            onCerrar={() => setSelectorSemanaDiarioAbierto(false)}
-          />
-        ) : null}
+        <input
+          ref={selectorSemanaDiarioInputRef}
+          type="date"
+          value={fechaSelectorDiario}
+          max={formatDateKey(new Date())}
+          onChange={(event) => aplicarFechaSelectorSemanaDiario(event.target.value)}
+          style={{
+            position: "fixed",
+            left: "0px",
+            bottom: "0px",
+            width: "1px",
+            height: "1px",
+            opacity: 0,
+            pointerEvents: "none",
+            border: 0,
+            padding: 0,
+            zIndex: -1,
+          }}
+          aria-hidden="true"
+          tabIndex={-1}
+        />
         {modalRescateAbierto ? <ModalRescateDia fechaKey={fechaHoyKey} onGuardar={ejecutarRescate} onDescartar={descartarRescate} /> : null}
       </div>
     </div>

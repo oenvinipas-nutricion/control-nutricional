@@ -2302,23 +2302,27 @@ th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
                 </button>
               </div>
 
-              <button
-                type="button"
-                style={{
-                  marginTop: "8px",
-                  border: reporteDiarioEsSemanaActual ? "1px solid rgba(79, 209, 197, 0.35)" : "1px solid rgba(148,163,184,0.28)",
-                  background: reporteDiarioEsSemanaActual ? "rgba(45,212,191,0.10)" : "rgba(15,23,42,0.54)",
-                  color: reporteDiarioEsSemanaActual ? "#7dd3fc" : "#cbd5e1",
-                  borderRadius: "999px",
-                  padding: "7px 14px",
-                  fontSize: previewEsMovil ? "0.72rem" : "0.78rem",
-                  fontWeight: 900,
-                  cursor: "pointer",
-                }}
-                onClick={irReporteDiarioSemanaActual}
-              >
-                📍 Semana actual
-              </button>
+              {!reporteDiarioEsSemanaActual && (
+                <button
+                  type="button"
+                  style={{
+                    marginTop: "8px",
+                    border: "1px solid rgba(125, 211, 252, 0.36)",
+                    background: "rgba(14, 165, 233, 0.12)",
+                    color: "#dbeafe",
+                    borderRadius: "999px",
+                    padding: "7px 14px",
+                    fontSize: previewEsMovil ? "0.72rem" : "0.78rem",
+                    fontWeight: 900,
+                    cursor: "pointer",
+                    boxShadow: "0 0 14px rgba(14, 165, 233, 0.10)",
+                  }}
+                  onClick={irReporteDiarioSemanaActual}
+                >
+                  <span style={{ color: "#7dd3fc", marginRight: "5px" }}>🔄</span>
+                  Volver a semana actual
+                </button>
+              )}
             </div>
 
             <div

@@ -579,6 +579,9 @@ function App() {
   const [fechaReporteDiarioKey, setFechaReporteDiarioKey] = useState(() => initialDayState.fechaKey);
   const [selectorSemanaDiarioAbierto, setSelectorSemanaDiarioAbierto] = useState(false);
   const [fechaSelectorDiario, setFechaSelectorDiario] = useState(() => initialDayState.fechaKey);
+  const [fechaReporteSemanalKey, setFechaReporteSemanalKey] = useState(() => initialDayState.fechaKey);
+  const [selectorSemanaSemanalAbierto, setSelectorSemanaSemanalAbierto] = useState(false);
+  const [fechaSelectorSemanal, setFechaSelectorSemanal] = useState(() => initialDayState.fechaKey);
   const [modoPostGuardado, setModoPostGuardado] = useState(false);
   const [modoLectura, setModoLectura] = useState(false);
   const [pdfPreview, setPdfPreview] = useState(null);
@@ -600,6 +603,7 @@ function App() {
   const [resumenDiarioParkingHeight, setResumenDiarioParkingHeight] = useState(0);
   const fechaBaseHoy = useMemo(() => parseDateFromKey(fechaHoyKey), [fechaHoyKey]);
   const fechaBaseReporteDiario = useMemo(() => parseDateFromKey(fechaReporteDiarioKey), [fechaReporteDiarioKey]);
+  const fechaBaseReporteSemanal = useMemo(() => parseDateFromKey(fechaReporteSemanalKey), [fechaReporteSemanalKey]);
   const actual = useMemo(() => OPCIONES.find((o) => o.label === comida) || OPCIONES[0], [comida]);
   const opcionesDisponibles = useMemo(() => OPCIONES.filter((op) => {
     if (op.label === "Colación AM" || op.label === "Colación PM") return !registrosColaciones[op.label];
@@ -658,7 +662,7 @@ function App() {
       if (event.key === "Escape") {
         setAbierto(false); setEditorRegistroAbierto(false); setConfirmacionEdicion(null);
         setMenuDatosAbierto(false); setPromptColacionActiva(null); setModalFinalizar(null); setModalMetasAbierto(false);
-        setModalRegistroAguaAbierto(false); setSelectorSemanaDiarioAbierto(false);
+        setModalRegistroAguaAbierto(false); setSelectorSemanaDiarioAbierto(false); setSelectorSemanaSemanalAbierto(false);
       }
     }
     document.addEventListener("mousedown", handleClickOutside);
@@ -828,14 +832,16 @@ useEffect(() => {
   
   const liveDaySnapshot = useMemo(() => buildDaySnapshot({ fechaKey: fechaHoyKey, fechaISO: fechaHoyISO, registrosPrincipales, registrosColaciones, aguaExtra, diaFinalizado, metasActuales, segmentosMetas, totalesDia, metaEfectiva: metaEfectivaHoy }), [fechaHoyKey, fechaHoyISO, registrosPrincipales, registrosColaciones, aguaExtra, diaFinalizado, metasActuales, segmentosMetas, totalesDia, metaEfectivaHoy]);
   const historialConHoy = useMemo(() => upsertHistorySnapshot(historialDias, liveDaySnapshot), [historialDias, liveDaySnapshot]);
-  const weekSnapshots = useMemo(() => getWeekSnapshotsForRange(historialConHoy, fechaBaseHoy), [historialConHoy, fechaBaseHoy]);
+  const weekSnapshots = useMemo(() => getWeekSnapshotsForRange(historialConHoy, fechaBaseReporteSemanal), [historialConHoy, fechaBaseReporteSemanal]);
   const monthSnapshots = useMemo(() => getMonthSnapshotsForRange(historialConHoy, fechaBaseHoy), [historialConHoy, fechaBaseHoy]);
   const dailyWeekSnapshots = useMemo(() => getWeekSnapshotsForRange(historialConHoy, fechaBaseReporteDiario), [historialConHoy, fechaBaseReporteDiario]);
-  const rangoSemanaPreview = useMemo(() => formatRangoHistorialTexto(fechaBaseHoy), [fechaBaseHoy]);
+  const rangoSemanaPreview = useMemo(() => formatRangoHistorialTexto(fechaBaseReporteSemanal), [fechaBaseReporteSemanal]);
   const rangoSemanaDiarioPreview = useMemo(() => formatRangoHistorialTexto(fechaBaseReporteDiario), [fechaBaseReporteDiario]);
   const resumenDiarioSemanaCerrados = useMemo(() => dailyWeekSnapshots.filter((row) => row?.diaFinalizado).slice(0, 7), [dailyWeekSnapshots]);
   const reporteDiarioEsSemanaActual = useMemo(() => formatDateKey(getStartOfWeek(fechaBaseReporteDiario)) === formatDateKey(getStartOfWeek(new Date())), [fechaBaseReporteDiario]);
   const puedeAvanzarReporteDiario = useMemo(() => getStartOfWeek(fechaBaseReporteDiario).getTime() < getStartOfWeek(new Date()).getTime(), [fechaBaseReporteDiario]);
+  const reporteSemanalEsSemanaActual = useMemo(() => formatDateKey(getStartOfWeek(fechaBaseReporteSemanal)) === formatDateKey(getStartOfWeek(new Date())), [fechaBaseReporteSemanal]);
+  const puedeAvanzarReporteSemanal = useMemo(() => getStartOfWeek(fechaBaseReporteSemanal).getTime() < getStartOfWeek(new Date()).getTime(), [fechaBaseReporteSemanal]);
   const resumenSemanalItems = useMemo(() => [
     { key: "kcal", icono: "🔥", label: "KCAL", unidad: "kcal", color: COLORES.kcal, actual: weekSnapshots.reduce((sum, item) => sum + item.totales.kcal, 0), meta: weekSnapshots.reduce((sum, item) => sum + item.metaEfectiva.kcal, 0) },
     { key: "prot", icono: "🥩", label: "PROT", unidad: "g", color: COLORES.prot, actual: weekSnapshots.reduce((sum, item) => sum + item.totales.prot, 0), meta: weekSnapshots.reduce((sum, item) => sum + item.metaEfectiva.prot, 0) },
@@ -1000,6 +1006,60 @@ useEffect(() => {
   function cancelarSelectorSemanaDiario() {
     setFechaSelectorDiario(fechaReporteDiarioKey || formatDateKey(new Date()));
     setSelectorSemanaDiarioAbierto(false);
+  }
+
+  function moverReporteSemanalSemanas(delta) {
+    setFechaReporteSemanalKey((prev) => {
+      const base = parseDateFromKey(prev);
+      base.setDate(base.getDate() + delta * 7);
+      return formatDateKey(base);
+    });
+    setPdfPreview(null);
+  }
+
+  function irReporteSemanalSemanaActual() {
+    setFechaReporteSemanalKey(formatDateKey(new Date()));
+    setFechaSelectorSemanal(formatDateKey(new Date()));
+    setPdfPreview(null);
+  }
+
+  function abrirSelectorSemanaSemanal() {
+    const fechaBase = fechaReporteSemanalKey || formatDateKey(new Date());
+    setFechaSelectorSemanal(fechaBase);
+    setSelectorSemanaSemanalAbierto(true);
+  }
+
+  function aplicarFechaSelectorSemanaSemanal(fechaElegidaKey) {
+    if (!fechaElegidaKey) return;
+    const fechaElegida = parseDateFromKey(fechaElegidaKey);
+    if (Number.isNaN(fechaElegida.getTime())) return;
+    const hoy = getStartOfDay(new Date());
+    if (getStartOfDay(fechaElegida).getTime() > hoy.getTime()) return;
+    setFechaSelectorSemanal(formatDateKey(fechaElegida));
+  }
+
+  function confirmarSelectorSemanaSemanal() {
+    const fechaElegida = parseDateFromKey(fechaSelectorSemanal || fechaReporteSemanalKey || formatDateKey(new Date()));
+    if (Number.isNaN(fechaElegida.getTime())) {
+      setSelectorSemanaSemanalAbierto(false);
+      return;
+    }
+    const hoy = getStartOfDay(new Date());
+    const fechaFinal = getStartOfDay(fechaElegida).getTime() > hoy.getTime() ? hoy : fechaElegida;
+    const nuevaFechaKey = formatDateKey(fechaFinal);
+    setFechaSelectorSemanal(nuevaFechaKey);
+    setFechaReporteSemanalKey(nuevaFechaKey);
+    setSelectorSemanaSemanalAbierto(false);
+    setPdfPreview(null);
+  }
+
+  function seleccionarSemanaActualEnCalendarioSemanal() {
+    setFechaSelectorSemanal(formatDateKey(new Date()));
+  }
+
+  function cancelarSelectorSemanaSemanal() {
+    setFechaSelectorSemanal(fechaReporteSemanalKey || formatDateKey(new Date()));
+    setSelectorSemanaSemanalAbierto(false);
   }
 
   function getBackupLocalStorageKeys() {
@@ -1365,7 +1425,11 @@ useEffect(() => {
   }
 
   function buildPdfHtml({ tituloExportacion, contenido }) {
-    const fechaPeriodoPdf = tituloExportacion === "Resumen Diario" ? fechaBaseReporteDiario : fechaBaseHoy;
+    const fechaPeriodoPdf = tituloExportacion === "Resumen Diario"
+      ? fechaBaseReporteDiario
+      : tituloExportacion === "Resumen Semanal"
+        ? fechaBaseReporteSemanal
+        : fechaBaseHoy;
     const periodoLabel = tituloExportacion === "Resumen Diario" ? formatRangoHistorialTexto(fechaPeriodoPdf) : getPeriodoPdfLabel(tituloExportacion, fechaPeriodoPdf);
     const nombreEncabezado = escapeHtml(nombreUsuario || "Usuario");
     const tituloSeguro = escapeHtml(tituloExportacion || "Resumen");
@@ -1644,7 +1708,11 @@ th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
     else if (tipo === "semanal") { tituloExportacion = "Resumen Semanal"; contenido = `${buildMetricCards(resumenSemanalItems, "semanal")}`; }
     else if (tipo === "mensual") { tituloExportacion = "Resumen Mensual"; contenido = `${buildMetricCards(resumenMensualItems, "mensual")}`; }
     const htmlDoc = buildPdfHtml({ tituloExportacion, contenido });
-    setPdfPreview({ html: htmlDoc, titulo: tituloExportacion, fechaKey: tipo === "diario" ? fechaReporteDiarioKey : fechaHoyKey });
+    setPdfPreview({
+      html: htmlDoc,
+      titulo: tituloExportacion,
+      fechaKey: tipo === "diario" ? fechaReporteDiarioKey : tipo === "semanal" ? fechaReporteSemanalKey : fechaHoyKey,
+    });
     setVistaActual("pdf");
     setMenuDatosAbierto(false);
     if (abrirPreview) setHistorialVista("preview");
@@ -2078,7 +2146,106 @@ th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
         <section style={styles.resumenSemanalSinMarcoExterno}>
           <div style={styles.headerProgresoHoy}>
             <div style={styles.headerResumenSemanalUnaLinea}>📊 RESUMEN SEMANAL</div>
-            <div style={styles.headerProgresoHoyFecha}>{rangoSemanaPreview}</div>
+          </div>
+
+          <div style={{ textAlign: "center", marginTop: "-8px", marginBottom: "10px" }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "42px minmax(0, 1fr) 42px",
+                alignItems: "center",
+                gap: previewEsMovil ? "6px" : "8px",
+                width: "100%",
+                maxWidth: "430px",
+                margin: "0 auto",
+              }}
+            >
+              <button
+                type="button"
+                aria-label="Semana anterior"
+                title="Semana anterior"
+                style={{
+                  border: "1px solid rgba(148,163,184,0.28)",
+                  background: "rgba(15,23,42,0.72)",
+                  color: "#ffffff",
+                  borderRadius: "14px",
+                  minHeight: "38px",
+                  fontSize: "1.08rem",
+                  fontWeight: 900,
+                  cursor: "pointer",
+                }}
+                onClick={() => moverReporteSemanalSemanas(-1)}
+              >
+                ◀️
+              </button>
+
+              <button
+                type="button"
+                aria-label="Elegir semana"
+                title="Elegir semana"
+                style={{
+                  border: "1px solid rgba(148,163,184,0.22)",
+                  background: "rgba(15,23,42,0.46)",
+                  color: "#e5e7eb",
+                  borderRadius: "16px",
+                  padding: previewEsMovil ? "8px 6px" : "9px 8px",
+                  minHeight: "38px",
+                  fontWeight: 900,
+                  fontSize: previewEsMovil ? "0.78rem" : "0.9rem",
+                  lineHeight: 1.16,
+                  cursor: "pointer",
+                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                }}
+                onClick={abrirSelectorSemanaSemanal}
+              >
+                📅 {rangoSemanaPreview}
+              </button>
+
+              <button
+                type="button"
+                aria-label="Semana siguiente"
+                title="Semana siguiente"
+                disabled={!puedeAvanzarReporteSemanal}
+                style={{
+                  border: "1px solid rgba(148,163,184,0.28)",
+                  background: puedeAvanzarReporteSemanal ? "rgba(15,23,42,0.72)" : "rgba(15,23,42,0.26)",
+                  color: puedeAvanzarReporteSemanal ? "#ffffff" : "#6b7280",
+                  borderRadius: "14px",
+                  minHeight: "38px",
+                  fontSize: "1.08rem",
+                  fontWeight: 900,
+                  cursor: puedeAvanzarReporteSemanal ? "pointer" : "not-allowed",
+                  opacity: puedeAvanzarReporteSemanal ? 1 : 0.58,
+                }}
+                onClick={() => {
+                  if (puedeAvanzarReporteSemanal) moverReporteSemanalSemanas(1);
+                }}
+              >
+                ▶️
+              </button>
+            </div>
+
+            {!reporteSemanalEsSemanaActual && (
+              <button
+                type="button"
+                style={{
+                  marginTop: "8px",
+                  border: "1px solid rgba(125, 211, 252, 0.36)",
+                  background: "rgba(14, 165, 233, 0.12)",
+                  color: "#dbeafe",
+                  borderRadius: "999px",
+                  padding: "7px 14px",
+                  fontSize: previewEsMovil ? "0.72rem" : "0.78rem",
+                  fontWeight: 900,
+                  cursor: "pointer",
+                  boxShadow: "0 0 14px rgba(14, 165, 233, 0.10)",
+                }}
+                onClick={irReporteSemanalSemanaActual}
+              >
+                <span style={{ color: "#7dd3fc", marginRight: "5px" }}>🔄</span>
+                Volver a semana actual
+              </button>
+            )}
           </div>
 
           <div style={styles.botonesMenuGridPreview}>
@@ -2984,12 +3151,24 @@ th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
         {modalMetasAbierto ? <ModalMetasDia camposMetas={camposMetas} onChange={handleCampoMetaChange} onConfirmar={confirmarCambioMetas} onCerrar={cerrarModalMetas} /> : null}
         {selectorSemanaDiarioAbierto ? (
           <ModalCalendarioSemanaReporte
+            tituloPrincipal="Resumen Diario"
             fechaValor={fechaSelectorDiario}
             fechaMaxima={formatDateKey(new Date())}
             onChange={aplicarFechaSelectorSemanaDiario}
             onConfirmar={confirmarSelectorSemanaDiario}
             onCerrar={cancelarSelectorSemanaDiario}
             onSemanaActual={seleccionarSemanaActualEnCalendarioDiario}
+          />
+        ) : null}
+        {selectorSemanaSemanalAbierto ? (
+          <ModalCalendarioSemanaReporte
+            tituloPrincipal="Resumen Semanal"
+            fechaValor={fechaSelectorSemanal}
+            fechaMaxima={formatDateKey(new Date())}
+            onChange={aplicarFechaSelectorSemanaSemanal}
+            onConfirmar={confirmarSelectorSemanaSemanal}
+            onCerrar={cancelarSelectorSemanaSemanal}
+            onSemanaActual={seleccionarSemanaActualEnCalendarioSemanal}
           />
         ) : null}
         {modalRescateAbierto ? <ModalRescateDia fechaKey={fechaHoyKey} onGuardar={ejecutarRescate} onDescartar={descartarRescate} /> : null}
@@ -3003,7 +3182,7 @@ th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
 // 🧩 BLOQUE 5: COMPONENTES SECUNDARIOS Y MODALES
 // ============================================================================
 
-function ModalCalendarioSemanaReporte({ fechaValor, fechaMaxima, onChange, onConfirmar, onCerrar, onSemanaActual }) {
+function ModalCalendarioSemanaReporte({ tituloPrincipal = "Resumen Diario", fechaValor, fechaMaxima, onChange, onConfirmar, onCerrar, onSemanaActual }) {
   const fechaSeleccionada = useMemo(() => {
     const parsed = parseDateFromKey(fechaValor || formatDateKey(new Date()));
     return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
@@ -3070,7 +3249,7 @@ function ModalCalendarioSemanaReporte({ fechaValor, fechaMaxima, onChange, onCon
       >
         <div style={{ textAlign: "center", marginBottom: "14px" }}>
           <div style={{ color: "#ffffff", fontWeight: 950, fontSize: "1.32rem", letterSpacing: "0.01em", lineHeight: 1.08 }}>
-            Resumen Diario
+            {tituloPrincipal}
           </div>
           <div style={{ color: "#dbe5f7", fontWeight: 950, fontSize: "0.98rem", letterSpacing: "0.04em", marginTop: "7px", textTransform: "uppercase" }}>
             Elegir semana

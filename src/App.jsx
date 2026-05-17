@@ -2141,6 +2141,8 @@ th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
   );
 
   const renderPDF = () => {
+    const previewEsMovil = typeof window !== "undefined" ? window.innerWidth <= 430 : true;
+
     if (historialVista === "semanal") {
       return (
         <section style={styles.resumenSemanalSinMarcoExterno}>

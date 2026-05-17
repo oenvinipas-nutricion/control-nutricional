@@ -285,6 +285,10 @@ function getStartOfWeek(dateInput) {
   monday.setDate(base.getDate() + diffToMonday);
   return monday;
 }
+function getStartOfMonth(dateInput) {
+  const base = dateInput instanceof Date ? new Date(dateInput) : new Date(dateInput);
+  return new Date(base.getFullYear(), base.getMonth(), 1);
+}
 function cloneMetas(metas = METAS_DIARIAS) {
   return {
     kcal: toNumber(metas.kcal), prot: toNumber(metas.prot), carb: toNumber(metas.carb),
@@ -582,6 +586,9 @@ function App() {
   const [fechaReporteSemanalKey, setFechaReporteSemanalKey] = useState(() => initialDayState.fechaKey);
   const [selectorSemanaSemanalAbierto, setSelectorSemanaSemanalAbierto] = useState(false);
   const [fechaSelectorSemanal, setFechaSelectorSemanal] = useState(() => initialDayState.fechaKey);
+  const [fechaReporteMensualKey, setFechaReporteMensualKey] = useState(() => initialDayState.fechaKey);
+  const [selectorMesMensualAbierto, setSelectorMesMensualAbierto] = useState(false);
+  const [fechaSelectorMensual, setFechaSelectorMensual] = useState(() => initialDayState.fechaKey);
   const [modoPostGuardado, setModoPostGuardado] = useState(false);
   const [modoLectura, setModoLectura] = useState(false);
   const [pdfPreview, setPdfPreview] = useState(null);
@@ -604,6 +611,7 @@ function App() {
   const fechaBaseHoy = useMemo(() => parseDateFromKey(fechaHoyKey), [fechaHoyKey]);
   const fechaBaseReporteDiario = useMemo(() => parseDateFromKey(fechaReporteDiarioKey), [fechaReporteDiarioKey]);
   const fechaBaseReporteSemanal = useMemo(() => parseDateFromKey(fechaReporteSemanalKey), [fechaReporteSemanalKey]);
+  const fechaBaseReporteMensual = useMemo(() => parseDateFromKey(fechaReporteMensualKey), [fechaReporteMensualKey]);
   const actual = useMemo(() => OPCIONES.find((o) => o.label === comida) || OPCIONES[0], [comida]);
   const opcionesDisponibles = useMemo(() => OPCIONES.filter((op) => {
     if (op.label === "Colación AM" || op.label === "Colación PM") return !registrosColaciones[op.label];
@@ -833,7 +841,7 @@ useEffect(() => {
   const liveDaySnapshot = useMemo(() => buildDaySnapshot({ fechaKey: fechaHoyKey, fechaISO: fechaHoyISO, registrosPrincipales, registrosColaciones, aguaExtra, diaFinalizado, metasActuales, segmentosMetas, totalesDia, metaEfectiva: metaEfectivaHoy }), [fechaHoyKey, fechaHoyISO, registrosPrincipales, registrosColaciones, aguaExtra, diaFinalizado, metasActuales, segmentosMetas, totalesDia, metaEfectivaHoy]);
   const historialConHoy = useMemo(() => upsertHistorySnapshot(historialDias, liveDaySnapshot), [historialDias, liveDaySnapshot]);
   const weekSnapshots = useMemo(() => getWeekSnapshotsForRange(historialConHoy, fechaBaseReporteSemanal), [historialConHoy, fechaBaseReporteSemanal]);
-  const monthSnapshots = useMemo(() => getMonthSnapshotsForRange(historialConHoy, fechaBaseHoy), [historialConHoy, fechaBaseHoy]);
+  const monthSnapshots = useMemo(() => getMonthSnapshotsForRange(historialConHoy, fechaBaseReporteMensual), [historialConHoy, fechaBaseReporteMensual]);
   const dailyWeekSnapshots = useMemo(() => getWeekSnapshotsForRange(historialConHoy, fechaBaseReporteDiario), [historialConHoy, fechaBaseReporteDiario]);
   const rangoSemanaPreview = useMemo(() => formatRangoHistorialTexto(fechaBaseReporteSemanal), [fechaBaseReporteSemanal]);
   const rangoSemanaDiarioPreview = useMemo(() => formatRangoHistorialTexto(fechaBaseReporteDiario), [fechaBaseReporteDiario]);
@@ -842,6 +850,8 @@ useEffect(() => {
   const puedeAvanzarReporteDiario = useMemo(() => getStartOfWeek(fechaBaseReporteDiario).getTime() < getStartOfWeek(new Date()).getTime(), [fechaBaseReporteDiario]);
   const reporteSemanalEsSemanaActual = useMemo(() => formatDateKey(getStartOfWeek(fechaBaseReporteSemanal)) === formatDateKey(getStartOfWeek(new Date())), [fechaBaseReporteSemanal]);
   const puedeAvanzarReporteSemanal = useMemo(() => getStartOfWeek(fechaBaseReporteSemanal).getTime() < getStartOfWeek(new Date()).getTime(), [fechaBaseReporteSemanal]);
+  const reporteMensualEsMesActual = useMemo(() => formatDateKey(getStartOfMonth(fechaBaseReporteMensual)) === formatDateKey(getStartOfMonth(new Date())), [fechaBaseReporteMensual]);
+  const puedeAvanzarReporteMensual = useMemo(() => getStartOfMonth(fechaBaseReporteMensual).getTime() < getStartOfMonth(new Date()).getTime(), [fechaBaseReporteMensual]);
   const resumenSemanalItems = useMemo(() => [
     { key: "kcal", icono: "🔥", label: "KCAL", unidad: "kcal", color: COLORES.kcal, actual: weekSnapshots.reduce((sum, item) => sum + item.totales.kcal, 0), meta: weekSnapshots.reduce((sum, item) => sum + item.metaEfectiva.kcal, 0) },
     { key: "prot", icono: "🥩", label: "PROT", unidad: "g", color: COLORES.prot, actual: weekSnapshots.reduce((sum, item) => sum + item.totales.prot, 0), meta: weekSnapshots.reduce((sum, item) => sum + item.metaEfectiva.prot, 0) },
@@ -1060,6 +1070,62 @@ useEffect(() => {
   function cancelarSelectorSemanaSemanal() {
     setFechaSelectorSemanal(fechaReporteSemanalKey || formatDateKey(new Date()));
     setSelectorSemanaSemanalAbierto(false);
+  }
+
+  function moverReporteMensualMeses(delta) {
+    setFechaReporteMensualKey((prev) => {
+      const base = parseDateFromKey(prev);
+      const next = new Date(base.getFullYear(), base.getMonth() + delta, 1);
+      const hoyMes = getStartOfMonth(new Date());
+      if (next.getTime() > hoyMes.getTime()) return prev;
+      return formatDateKey(next);
+    });
+    setPdfPreview(null);
+  }
+
+  function irReporteMensualMesActual() {
+    setFechaReporteMensualKey(formatDateKey(new Date()));
+    setFechaSelectorMensual(formatDateKey(new Date()));
+    setPdfPreview(null);
+  }
+
+  function abrirSelectorMesMensual() {
+    const fechaBase = fechaReporteMensualKey || formatDateKey(new Date());
+    setFechaSelectorMensual(fechaBase);
+    setSelectorMesMensualAbierto(true);
+  }
+
+  function aplicarFechaSelectorMesMensual(fechaElegidaKey) {
+    if (!fechaElegidaKey) return;
+    const fechaElegida = parseDateFromKey(fechaElegidaKey);
+    if (Number.isNaN(fechaElegida.getTime())) return;
+    const hoy = getStartOfDay(new Date());
+    if (getStartOfDay(fechaElegida).getTime() > hoy.getTime()) return;
+    setFechaSelectorMensual(formatDateKey(fechaElegida));
+  }
+
+  function confirmarSelectorMesMensual() {
+    const fechaElegida = parseDateFromKey(fechaSelectorMensual || fechaReporteMensualKey || formatDateKey(new Date()));
+    if (Number.isNaN(fechaElegida.getTime())) {
+      setSelectorMesMensualAbierto(false);
+      return;
+    }
+    const hoy = getStartOfDay(new Date());
+    const fechaFinal = getStartOfDay(fechaElegida).getTime() > hoy.getTime() ? hoy : fechaElegida;
+    const nuevaFechaKey = formatDateKey(getStartOfMonth(fechaFinal));
+    setFechaSelectorMensual(nuevaFechaKey);
+    setFechaReporteMensualKey(nuevaFechaKey);
+    setSelectorMesMensualAbierto(false);
+    setPdfPreview(null);
+  }
+
+  function seleccionarMesActualEnCalendarioMensual() {
+    setFechaSelectorMensual(formatDateKey(new Date()));
+  }
+
+  function cancelarSelectorMesMensual() {
+    setFechaSelectorMensual(fechaReporteMensualKey || formatDateKey(new Date()));
+    setSelectorMesMensualAbierto(false);
   }
 
   function getBackupLocalStorageKeys() {
@@ -1429,7 +1495,9 @@ useEffect(() => {
       ? fechaBaseReporteDiario
       : tituloExportacion === "Resumen Semanal"
         ? fechaBaseReporteSemanal
-        : fechaBaseHoy;
+        : tituloExportacion === "Resumen Mensual"
+          ? fechaBaseReporteMensual
+          : fechaBaseHoy;
     const periodoLabel = tituloExportacion === "Resumen Diario" ? formatRangoHistorialTexto(fechaPeriodoPdf) : getPeriodoPdfLabel(tituloExportacion, fechaPeriodoPdf);
     const nombreEncabezado = escapeHtml(nombreUsuario || "Usuario");
     const tituloSeguro = escapeHtml(tituloExportacion || "Resumen");
@@ -1711,7 +1779,7 @@ th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
     setPdfPreview({
       html: htmlDoc,
       titulo: tituloExportacion,
-      fechaKey: tipo === "diario" ? fechaReporteDiarioKey : tipo === "semanal" ? fechaReporteSemanalKey : fechaHoyKey,
+      fechaKey: tipo === "diario" ? fechaReporteDiarioKey : tipo === "semanal" ? fechaReporteSemanalKey : tipo === "mensual" ? fechaReporteMensualKey : fechaHoyKey,
     });
     setVistaActual("pdf");
     setMenuDatosAbierto(false);
@@ -2299,11 +2367,109 @@ th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
 
     if (historialVista === "mensual") {
       const hayCambioMetasMes = monthSnapshots.some((item) => item?.hayCambioMetas);
+      const viewportWidth = typeof window !== "undefined" ? window.innerWidth : 430;
+      const previewEsMovil = viewportWidth <= 430;
       return (
         <section style={styles.resumenSemanalSinMarcoExterno}>
-          <div style={styles.headerProgresoHoy}>
+          <div style={{ ...styles.headerProgresoHoy, marginBottom: "10px" }}>
             <div style={styles.headerResumenSemanalUnaLinea}>📊 RESUMEN MENSUAL</div>
-            <div style={styles.headerProgresoHoyFecha}>{formatMesHistorialTexto(fechaBaseHoy)}</div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "42px minmax(0, 1fr) 42px",
+                gap: previewEsMovil ? "6px" : "8px",
+                alignItems: "center",
+                width: "100%",
+                maxWidth: "430px",
+                margin: "8px auto 0",
+              }}
+            >
+              <button
+                type="button"
+                aria-label="Mes anterior"
+                title="Mes anterior"
+                style={{
+                  border: "1px solid rgba(148,163,184,0.28)",
+                  background: "rgba(15,23,42,0.72)",
+                  color: "#ffffff",
+                  borderRadius: "14px",
+                  minHeight: "38px",
+                  fontSize: "1.08rem",
+                  fontWeight: 900,
+                  cursor: "pointer",
+                }}
+                onClick={() => moverReporteMensualMeses(-1)}
+              >
+                ◀️
+              </button>
+
+              <button
+                type="button"
+                aria-label="Elegir mes"
+                title="Elegir mes"
+                style={{
+                  border: "1px solid rgba(96,165,250,0.34)",
+                  background: "linear-gradient(180deg, rgba(30,41,59,0.92), rgba(15,23,42,0.92))",
+                  color: "#ffffff",
+                  borderRadius: "16px",
+                  minHeight: "42px",
+                  padding: previewEsMovil ? "8px 8px" : "9px 12px",
+                  fontSize: previewEsMovil ? "0.78rem" : "0.9rem",
+                  lineHeight: 1.16,
+                  cursor: "pointer",
+                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                  fontWeight: 950,
+                }}
+                onClick={abrirSelectorMesMensual}
+              >
+                📅 {formatMesHistorialTexto(fechaBaseReporteMensual)}
+              </button>
+
+              <button
+                type="button"
+                aria-label="Mes siguiente"
+                title="Mes siguiente"
+                disabled={!puedeAvanzarReporteMensual}
+                style={{
+                  border: "1px solid rgba(148,163,184,0.28)",
+                  background: puedeAvanzarReporteMensual ? "rgba(15,23,42,0.72)" : "rgba(15,23,42,0.26)",
+                  color: puedeAvanzarReporteMensual ? "#ffffff" : "#6b7280",
+                  borderRadius: "14px",
+                  minHeight: "38px",
+                  fontSize: "1.08rem",
+                  fontWeight: 900,
+                  cursor: puedeAvanzarReporteMensual ? "pointer" : "not-allowed",
+                  opacity: puedeAvanzarReporteMensual ? 1 : 0.58,
+                }}
+                onClick={() => {
+                  if (puedeAvanzarReporteMensual) moverReporteMensualMeses(1);
+                }}
+              >
+                ▶️
+              </button>
+            </div>
+
+            {!reporteMensualEsMesActual && (
+              <button
+                type="button"
+                style={{
+                  marginTop: "8px",
+                  border: "1px solid rgba(125, 211, 252, 0.36)",
+                  background: "rgba(14, 165, 233, 0.12)",
+                  color: "#dbeafe",
+                  borderRadius: "999px",
+                  padding: "7px 14px",
+                  fontSize: previewEsMovil ? "0.72rem" : "0.78rem",
+                  fontWeight: 900,
+                  cursor: "pointer",
+                  boxShadow: "0 0 14px rgba(14, 165, 233, 0.10)",
+                }}
+                onClick={irReporteMensualMesActual}
+              >
+                <span style={{ color: "#7dd3fc", marginRight: "5px" }}>🔄</span>
+                Volver al mes actual
+              </button>
+            )}
           </div>
 
           <div style={styles.botonesMenuGridPreview}>
@@ -3173,6 +3339,17 @@ th, td { border: 1px solid #d9e3f0; padding: 8px 6px; text-align: center; }
             onSemanaActual={seleccionarSemanaActualEnCalendarioSemanal}
           />
         ) : null}
+        {selectorMesMensualAbierto ? (
+          <ModalCalendarioMesReporte
+            tituloPrincipal="Resumen Mensual"
+            fechaValor={fechaSelectorMensual}
+            fechaMaxima={formatDateKey(new Date())}
+            onChange={aplicarFechaSelectorMesMensual}
+            onConfirmar={confirmarSelectorMesMensual}
+            onCerrar={cancelarSelectorMesMensual}
+            onMesActual={seleccionarMesActualEnCalendarioMensual}
+          />
+        ) : null}
         {modalRescateAbierto ? <ModalRescateDia fechaKey={fechaHoyKey} onGuardar={ejecutarRescate} onDescartar={descartarRescate} /> : null}
       </div>
     </div>
@@ -3348,6 +3525,168 @@ function ModalCalendarioSemanaReporte({ tituloPrincipal = "Resumen Diario", fech
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
           <button type="button" style={styles.confirmSecondaryBtnSolo} onClick={onCerrar}>Cancelar</button>
           <button type="button" style={{ ...styles.confirmPrimaryBtn, background: "#2563eb" }} onClick={onConfirmar}>Ir a la semana</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ModalCalendarioMesReporte({ tituloPrincipal = "Resumen Mensual", fechaValor, fechaMaxima, onChange, onConfirmar, onCerrar, onMesActual }) {
+  const fechaSeleccionada = useMemo(() => {
+    const parsed = parseDateFromKey(fechaValor || formatDateKey(new Date()));
+    return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  }, [fechaValor]);
+
+  const fechaMaximaDate = useMemo(() => {
+    const parsed = parseDateFromKey(fechaMaxima || formatDateKey(new Date()));
+    return getStartOfDay(Number.isNaN(parsed.getTime()) ? new Date() : parsed);
+  }, [fechaMaxima]);
+
+  const [mesVisible, setMesVisible] = useState(() => new Date(fechaSeleccionada.getFullYear(), fechaSeleccionada.getMonth(), 1));
+
+  useEffect(() => {
+    setMesVisible(new Date(fechaSeleccionada.getFullYear(), fechaSeleccionada.getMonth(), 1));
+  }, [fechaSeleccionada]);
+
+  const diasSemana = ["L", "M", "M", "J", "V", "S", "D"];
+  const monthLabel = mesVisible.toLocaleDateString("es-ES", { month: "long", year: "numeric" });
+  const monthLabelFinal = monthLabel.charAt(0).toUpperCase() + monthLabel.slice(1);
+  const selectedKey = formatDateKey(fechaSeleccionada);
+  const selectedMonthKey = formatDateKey(getStartOfMonth(fechaSeleccionada));
+
+  const maxMonth = new Date(fechaMaximaDate.getFullYear(), fechaMaximaDate.getMonth(), 1);
+  const puedeAvanzarMes = mesVisible.getTime() < maxMonth.getTime();
+
+  const moverMes = (delta) => {
+    setMesVisible((prev) => {
+      const next = new Date(prev.getFullYear(), prev.getMonth() + delta, 1);
+      if (next.getTime() > maxMonth.getTime()) return prev;
+      return next;
+    });
+  };
+
+  const firstOfMonth = new Date(mesVisible.getFullYear(), mesVisible.getMonth(), 1);
+  const offsetMonday = firstOfMonth.getDay() === 0 ? 6 : firstOfMonth.getDay() - 1;
+  const startGrid = new Date(firstOfMonth);
+  startGrid.setDate(firstOfMonth.getDate() - offsetMonday);
+  const cells = Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(startGrid);
+    date.setDate(startGrid.getDate() + index);
+    return date;
+  });
+
+  return (
+    <div style={styles.modalOverlay}>
+      <div
+        style={{
+          width: "min(92vw, 392px)",
+          background: "linear-gradient(180deg, rgba(22,29,44,0.98) 0%, rgba(5,9,18,0.98) 100%)",
+          border: "1px solid rgba(148,163,184,0.28)",
+          borderRadius: "28px",
+          padding: "20px 16px 16px",
+          boxShadow: "0 32px 70px rgba(0,0,0,0.62), inset 0 1px 0 rgba(255,255,255,0.06)",
+          animation: "scaleFadeIn 0.18s ease-out",
+        }}
+      >
+        <div style={{ textAlign: "center", marginBottom: "14px" }}>
+          <div style={{ color: "#ffffff", fontWeight: 950, fontSize: "1.32rem", letterSpacing: "0.01em", lineHeight: 1.08 }}>
+            {tituloPrincipal}
+          </div>
+          <div style={{ color: "#dbe5f7", fontWeight: 950, fontSize: "0.98rem", letterSpacing: "0.04em", marginTop: "7px", textTransform: "uppercase" }}>
+            Elegir mes
+          </div>
+          <div style={{ color: "#91a0ba", fontWeight: 750, fontSize: "0.78rem", lineHeight: 1.35, marginTop: "10px" }}>
+            Toca cualquier día para elegir el mes completo.
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "44px minmax(0, 1fr) 44px", alignItems: "center", gap: "10px", marginBottom: "12px" }}>
+          <button
+            type="button"
+            onClick={() => moverMes(-1)}
+            style={{
+              height: "42px",
+              borderRadius: "14px",
+              border: "1px solid rgba(148,163,184,0.25)",
+              background: "rgba(15,23,42,0.72)",
+              color: "#ffffff",
+              fontSize: "1.22rem",
+              fontWeight: 950,
+              cursor: "pointer",
+            }}
+            aria-label="Mes anterior"
+          >
+            ‹
+          </button>
+          <div style={{ textAlign: "center", color: "#ffffff", fontSize: "1.05rem", fontWeight: 950, lineHeight: 1.1 }}>{monthLabelFinal}</div>
+          <button
+            type="button"
+            onClick={() => moverMes(1)}
+            disabled={!puedeAvanzarMes}
+            style={{
+              height: "42px",
+              borderRadius: "14px",
+              border: "1px solid rgba(148,163,184,0.25)",
+              background: puedeAvanzarMes ? "rgba(15,23,42,0.72)" : "rgba(15,23,42,0.28)",
+              color: puedeAvanzarMes ? "#ffffff" : "#64748b",
+              fontSize: "1.22rem",
+              fontWeight: 950,
+              cursor: puedeAvanzarMes ? "pointer" : "not-allowed",
+            }}
+            aria-label="Mes siguiente"
+          >
+            ›
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "4px", marginBottom: "6px" }}>
+          {diasSemana.map((dia, index) => (
+            <div key={dia + index} style={{ textAlign: "center", color: "#98a2b3", fontWeight: 950, fontSize: "0.76rem", padding: "6px 0" }}>{dia}</div>
+          ))}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "4px", marginBottom: "12px" }}>
+          {cells.map((date) => {
+            const key = formatDateKey(date);
+            const sameMonth = date.getMonth() === mesVisible.getMonth();
+            const disabled = getStartOfDay(date).getTime() > fechaMaximaDate.getTime();
+            const selected = key === selectedKey;
+            const inSelectedMonth = formatDateKey(getStartOfMonth(date)) === selectedMonthKey && sameMonth;
+            return (
+              <button
+                key={key}
+                type="button"
+                disabled={disabled}
+                onClick={() => onChange(key)}
+                style={{
+                  height: "36px",
+                  borderRadius: selected ? "999px" : inSelectedMonth ? "14px" : "12px",
+                  border: selected ? "1px solid rgba(147,197,253,0.95)" : "1px solid transparent",
+                  background: selected
+                    ? "linear-gradient(180deg, #5b8cff 0%, #2f68d8 100%)"
+                    : inSelectedMonth
+                      ? "rgba(96,165,250,0.13)"
+                      : "transparent",
+                  color: disabled ? "#4b5563" : sameMonth ? "#f8fafc" : "#64748b",
+                  fontSize: "0.94rem",
+                  fontWeight: selected || inSelectedMonth ? 950 : 850,
+                  cursor: disabled ? "not-allowed" : "pointer",
+                  opacity: disabled ? 0.45 : sameMonth ? 1 : 0.62,
+                  boxShadow: selected ? "0 0 18px rgba(59,130,246,0.38)" : "none",
+                }}
+                aria-label={date.toLocaleDateString("es-ES")}
+              >
+                {date.getDate()}
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={{ height: "2px", marginBottom: "14px" }} />
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+          <button type="button" style={styles.confirmSecondaryBtnSolo} onClick={onCerrar}>Cancelar</button>
+          <button type="button" style={{ ...styles.confirmPrimaryBtn, background: "#2563eb" }} onClick={onConfirmar}>Ir al mes</button>
         </div>
       </div>
     </div>
